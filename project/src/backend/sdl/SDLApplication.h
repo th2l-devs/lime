@@ -53,6 +53,12 @@ namespace lime {
 			void ProcessWindowEvent (SDL_Event* event);
 			int WaitEvent (SDL_Event* event);
 
+			void RenderFrame ();
+
+			#ifdef LIME_FIX_FREEZE_WINDOW
+			static int SDLCALL ExposeEventWatcher (void* userdata, SDL_Event* event);
+			#endif
+
 			static void UpdateFrame ();
 			static void UpdateFrame (void*);
 

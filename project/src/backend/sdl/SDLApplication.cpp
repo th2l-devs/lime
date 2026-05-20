@@ -354,6 +354,11 @@ namespace lime {
 	void SDLApplication::Init () {
 
 		active = true;
+
+		#ifdef LIME_FIX_FREEZE_WINDOW
+		SDL_AddEventWatch (ExposeEventWatcher, NULL);
+		#endif
+
 		lastUpdate = SDL_GetTicks ();
 		nextUpdate = lastUpdate;
 
@@ -845,6 +850,58 @@ namespace lime {
 		#ifdef IPHONE
 		SDL_iPhoneSetAnimationCallback (window->sdlWindow, 1, UpdateFrame, NULL);
 		#endif
+
+	}
+
+
+	#ifdef LIME_FIX_FREEZE_WINDOW
+
+	int SDLCALL SDLApplication::ExposeEventWatcher (void* userdata, SDL_Event* event) {
+
+		// On Windows the OS runs a modal event loop while the user drags, resizes or
+		// moves the window, which blocks SDLApplication::Update () for the whole
+		// interaction. SDL still pumps events during that loop, so this watcher (added
+		// via SDL_AddEventWatch) renders a frame in-band to keep the window from
+		// freezing/showing stale content while it is being dragged.
+		if (!inBackground && currentApplication != 0 && event->type == SDL_WINDOWEVENT) {
+
+			switch (event->window.event) {
+
+				case SDL_WINDOWEVENT_EXPOSED:
+				case SDL_WINDOWEVENT_MOVED:
+				case SDL_WINDOWEVENT_SIZE_CHANGED:
+
+					currentApplication->ProcessWindowEvent (event);
+					currentApplication->RenderFrame ();
+					break;
+
+			}
+
+		}
+
+		// SDL2 ignores the return value of watchers registered with SDL_AddEventWatch,
+		// so the event still reaches the normal poll loop. That only costs one extra
+		// (harmless) render once the modal loop ends; RenderFrame () has already
+		// advanced lastUpdate, so the next Update () does not see a deltaTime spike.
+		return 0;
+
+	}
+
+	#endif
+
+
+	void SDLApplication::RenderFrame () {
+
+		currentUpdate = SDL_GetPerformanceCounter ();
+		double deltaTime = (double)(currentUpdate - lastUpdate) / freq;
+		lastUpdate = currentUpdate;
+
+		applicationEvent.type = UPDATE;
+		applicationEvent.deltaTime = deltaTime * 1000;
+		ApplicationEvent::Dispatch (&applicationEvent);
+
+		renderEvent.type = RENDER;
+		RenderEvent::Dispatch (&renderEvent);
 
 	}
 
