@@ -1016,14 +1016,16 @@ namespace lime {
 		#endif
 			currentUpdate = SDL_GetPerformanceCounter ();
 			
-	        double deltaTime = (double)(currentUpdate - lastUpdate) / freq;
-		    if (deltaTime < framePeriod) {
-				double waitTime = framePeriod - deltaTime;
-            	Uint64 waitTicks = (Uint64)(waitTime * freq);
-            	SDL_Delay((waitTicks * 1000) / freq);
-            	currentUpdate = SDL_GetPerformanceCounter();
-            	deltaTime += waitTime;
-        	}
+			double deltaTime = (double)(currentUpdate - lastUpdate) / freq;
+			if (deltaTime < framePeriod) {
+				// sleep with a 1ms margin, busy-spin the remainder so we never overshoot
+				Uint64 targetUpdate = lastUpdate + (Uint64)(framePeriod * freq);
+				while ((currentUpdate = SDL_GetPerformanceCounter ()) < targetUpdate) {
+					double remaining = (double)(targetUpdate - currentUpdate) / freq;
+					if (remaining > 0.002) SDL_Delay ((Uint32)((remaining - 0.001) * 1000));
+				}
+				deltaTime = (double)(currentUpdate - lastUpdate) / freq;
+			}
 			lastUpdate = currentUpdate;
 
 			applicationEvent.type = UPDATE;

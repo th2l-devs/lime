@@ -30,13 +30,23 @@ class BackgroundWorker
 	public var onError = new Event<Dynamic->Void>();
 	public var onProgress = new Event<Dynamic->Void>();
 
+	/**
+		When `true`, `run()` executes the work on the calling (main) thread instead of
+		spawning a background thread, dispatching results immediately. Needed on Windows
+		for native modal dialogs, which deadlock if pumped from a background thread.
+	**/
+	public var synchronous:Bool;
+
 	@:noCompletion private var __runMessage:Dynamic;
 	#if (cpp || neko)
 	@:noCompletion private var __messageQueue:Deque<Dynamic>;
 	@:noCompletion private var __workerThread:Thread;
 	#end
 
-	public function new() {}
+	public function new(synchronous:Bool = false)
+	{
+		this.synchronous = synchronous;
+	}
 
 	public function cancel():Void
 	{
@@ -54,14 +64,21 @@ class BackgroundWorker
 		__runMessage = message;
 
 		#if (cpp || neko)
-		__messageQueue = new Deque<Dynamic>();
-		__workerThread = Thread.create(__doWork);
-
-		// TODO: Better way to do this
-
-		if (Application.current != null)
+		if (synchronous)
 		{
-			Application.current.onUpdate.add(__update);
+			__doWork();
+		}
+		else
+		{
+			__messageQueue = new Deque<Dynamic>();
+			__workerThread = Thread.create(__doWork);
+
+			// TODO: Better way to do this
+
+			if (Application.current != null)
+			{
+				Application.current.onUpdate.add(__update);
+			}
 		}
 		#else
 		__doWork();
@@ -73,46 +90,68 @@ class BackgroundWorker
 		completed = true;
 
 		#if (cpp || neko)
-		__messageQueue.add(MESSAGE_COMPLETE);
-		__messageQueue.add(message);
-		#else
+		if (!synchronous)
+		{
+			__messageQueue.add(MESSAGE_COMPLETE);
+			__messageQueue.add(message);
+			return;
+		}
+		#end
+
 		if (!canceled)
 		{
 			canceled = true;
 			onComplete.dispatch(message);
 		}
-		#end
 	}
 
 	public function sendError(message:Dynamic = null):Void
 	{
 		#if (cpp || neko)
-		__messageQueue.add(MESSAGE_ERROR);
-		__messageQueue.add(message);
-		#else
+		if (!synchronous)
+		{
+			__messageQueue.add(MESSAGE_ERROR);
+			__messageQueue.add(message);
+			return;
+		}
+		#end
+
 		if (!canceled)
 		{
 			canceled = true;
 			onError.dispatch(message);
 		}
-		#end
 	}
 
 	public function sendProgress(message:Dynamic = null):Void
 	{
 		#if (cpp || neko)
-		__messageQueue.add(message);
-		#else
+		if (!synchronous)
+		{
+			__messageQueue.add(message);
+			return;
+		}
+		#end
+
 		if (!canceled)
 		{
 			onProgress.dispatch(message);
 		}
-		#end
 	}
 
 	@:noCompletion private function __doWork():Void
 	{
-		doWork.dispatch(__runMessage);
+		// A throwing job would otherwise kill the worker thread silently, so the
+		// completion message is never queued and the caller waits forever. Route
+		// the exception to onError instead.
+		try
+		{
+			doWork.dispatch(__runMessage);
+		}
+		catch (e:Dynamic)
+		{
+			sendError(e);
+		}
 
 		// #if (cpp || neko)
 		//
@@ -139,7 +178,7 @@ class BackgroundWorker
 		{
 			if (message == MESSAGE_ERROR)
 			{
-				Application.current.onUpdate.remove(__update);
+				if (Application.current != null) Application.current.onUpdate.remove(__update);
 
 				if (!canceled)
 				{
@@ -149,7 +188,7 @@ class BackgroundWorker
 			}
 			else if (message == MESSAGE_COMPLETE)
 			{
-				Application.current.onUpdate.remove(__update);
+				if (Application.current != null) Application.current.onUpdate.remove(__update);
 
 				if (!canceled)
 				{

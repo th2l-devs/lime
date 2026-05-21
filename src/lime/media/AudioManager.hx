@@ -36,12 +36,13 @@ class AudioManager
 					var alc = context.openal;
 
 					var device = alc.openDevice();
-					var ctx = alc.createContext(device);
+
+					var ctx = device != null ? alc.createContext(device) : null;
 					alc.makeContextCurrent(ctx);
 					alc.processContext(ctx);
 
-					var version:String = alc.getString(AL.VERSION);
-					var alSoft:Bool = StringTools.contains(version, "ALSOFT");
+					var version:String = ctx != null ? alc.getString(AL.VERSION) : null;
+					var alSoft:Bool = version != null && StringTools.contains(version, "ALSOFT");
 
 					if (alSoft)
 					{

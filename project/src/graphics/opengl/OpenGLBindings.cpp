@@ -524,8 +524,8 @@ namespace lime {
 
 	void lime_gl_blit_framebuffer (int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, int mask, int filter) {
 
-		#ifdef LIME_GLES3_API
-		glBlitFramebuffer (srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glBlitFramebuffer) glBlitFramebuffer (srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 		#endif
 
 	}
@@ -533,8 +533,8 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_blit_framebuffer) (int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, int mask, int filter) {
 
-		#ifdef LIME_GLES3_API
-		glBlitFramebuffer (srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glBlitFramebuffer) glBlitFramebuffer (srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 		#endif
 
 	}
@@ -600,8 +600,8 @@ namespace lime {
 
 	void lime_gl_clear_bufferfi (int buffer, int drawBuffer, float depth, int stencil) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferfi (buffer, drawBuffer, depth, stencil);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferfi) glClearBufferfi (buffer, drawBuffer, depth, stencil);
 		#endif
 
 	}
@@ -609,8 +609,8 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_clear_bufferfi) (int buffer, int drawBuffer, float depth, int stencil) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferfi (buffer, drawBuffer, depth, stencil);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferfi) glClearBufferfi (buffer, drawBuffer, depth, stencil);
 		#endif
 
 	}
@@ -618,8 +618,8 @@ namespace lime {
 
 	void lime_gl_clear_bufferfv (int buffer, int drawBuffer, double data) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferfv (buffer, drawBuffer, (GLfloat*)(uintptr_t)data);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferfv) glClearBufferfv (buffer, drawBuffer, (GLfloat*)(uintptr_t)data);
 		#endif
 
 	}
@@ -627,8 +627,8 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_clear_bufferfv) (int buffer, int drawBuffer, double data) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferfv (buffer, drawBuffer, (GLfloat*)(uintptr_t)data);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferfv) glClearBufferfv (buffer, drawBuffer, (GLfloat*)(uintptr_t)data);
 		#endif
 
 	}
@@ -636,8 +636,8 @@ namespace lime {
 
 	void lime_gl_clear_bufferiv (int buffer, int drawBuffer, double data) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferiv (buffer, drawBuffer, (GLint*)(uintptr_t)data);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferiv) glClearBufferiv (buffer, drawBuffer, (GLint*)(uintptr_t)data);
 		#endif
 
 	}
@@ -645,8 +645,8 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_clear_bufferiv) (int buffer, int drawBuffer, double data) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferiv (buffer, drawBuffer, (GLint*)(uintptr_t)data);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferiv) glClearBufferiv (buffer, drawBuffer, (GLint*)(uintptr_t)data);
 		#endif
 
 	}
@@ -654,8 +654,8 @@ namespace lime {
 
 	void lime_gl_clear_bufferuiv (int buffer, int drawBuffer, double data) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferuiv (buffer, drawBuffer, (GLuint*)(uintptr_t)data);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferuiv) glClearBufferuiv (buffer, drawBuffer, (GLuint*)(uintptr_t)data);
 		#endif
 
 	}
@@ -663,8 +663,8 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_clear_bufferuiv) (int buffer, int drawBuffer, double data) {
 
-		#ifdef LIME_GLES3_API
-		glClearBufferuiv (buffer, drawBuffer, (GLuint*)(uintptr_t)data);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glClearBufferuiv) glClearBufferuiv (buffer, drawBuffer, (GLuint*)(uintptr_t)data);
 		#endif
 
 	}
@@ -884,8 +884,8 @@ namespace lime {
 
 	void lime_gl_copy_tex_sub_image_3d (int target, int level, int xoffset, int yoffset, int zoffset, int x, int y, int width, int height) {
 
-		#ifdef LIME_GLES3_API
-		glCopyTexSubImage3D (target, level, xoffset, yoffset, zoffset, x, y, width, height);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glCopyTexSubImage3D) glCopyTexSubImage3D (target, level, xoffset, yoffset, zoffset, x, y, width, height);
 		#endif
 
 	}
@@ -893,8 +893,8 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_copy_tex_sub_image_3d) (int target, int level, int xoffset, int yoffset, int zoffset, int x, int y, int width, int height) {
 
-		#ifdef LIME_GLES3_API
-		glCopyTexSubImage3D (target, level, xoffset, yoffset, zoffset, x, y, width, height);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glCopyTexSubImage3D) glCopyTexSubImage3D (target, level, xoffset, yoffset, zoffset, x, y, width, height);
 		#endif
 
 	}
@@ -1404,7 +1404,7 @@ namespace lime {
 
 	void lime_gl_draw_buffers (value buffers) {
 
-		#ifdef LIME_GLES3_API
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
 		GLsizei size = val_array_size (buffers);
 		GLenum *_buffers = (GLenum*)alloca (size * sizeof(GLenum));
 
@@ -1414,7 +1414,7 @@ namespace lime {
 
 		}
 
-		glDrawBuffers (size, _buffers);
+		if (glDrawBuffers) glDrawBuffers (size, _buffers);
 		#endif
 
 	}
@@ -1422,9 +1422,9 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_draw_buffers) (hl_varray* buffers) {
 
-		#ifdef LIME_GLES3_API
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
 		GLsizei size = buffers->size;
-		glDrawBuffers (size, (GLenum*)hl_aptr (buffers, int));
+		if (glDrawBuffers) glDrawBuffers (size, (GLenum*)hl_aptr (buffers, int));
 		#endif
 
 	}
@@ -3986,8 +3986,8 @@ namespace lime {
 
 	void lime_gl_read_buffer (int src) {
 
-		#ifdef LIME_GLES3_API
-		glReadBuffer (src);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glReadBuffer) glReadBuffer (src);
 		#endif
 
 	}
@@ -3995,8 +3995,8 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_read_buffer) (int src) {
 
-		#ifdef LIME_GLES3_API
-		glReadBuffer (src);
+		#if defined (LIME_GLES3_API) || !defined (LIME_GLES)
+		if (glReadBuffer) glReadBuffer (src);
 		#endif
 
 	}

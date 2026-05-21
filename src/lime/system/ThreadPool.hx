@@ -141,7 +141,17 @@ class ThreadPool
 		if (!__synchronous)
 		{
 			__workResult.add(new ThreadPoolMessage(WORK, state));
-			doWork.dispatch(state);
+			// A throwing job on a worker thread would otherwise die silently and the
+			// work would never complete (the thread leaks and the queue never drains).
+			// Route it to sendError so onError fires and the job is accounted for.
+			try
+			{
+				doWork.dispatch(state);
+			}
+			catch (e:Dynamic)
+			{
+				sendError(e);
+			}
 			return;
 		}
 		#end

@@ -112,7 +112,7 @@ class FileDialog #if android implements JNISafety #end
 		if (type == null) type = FileDialogType.OPEN;
 
 		#if desktop
-		var worker = new BackgroundWorker();
+		var worker = new BackgroundWorker(#if windows true #else false #end);
 
 		worker.doWork.add(function(_)
 		{
@@ -281,7 +281,7 @@ class FileDialog #if android implements JNISafety #end
 	public function open(filter:String = null, defaultPath:String = null, title:String = null):Bool
 	{
 		#if (desktop && sys)
-		var worker = new BackgroundWorker();
+		var worker = new BackgroundWorker(#if windows true #else false #end);
 
 		worker.doWork.add(function(_)
 		{
@@ -356,7 +356,7 @@ class FileDialog #if android implements JNISafety #end
 		#end
 
 		#if (desktop && sys)
-		var worker = new BackgroundWorker();
+		var worker = new BackgroundWorker(#if windows true #else false #end);
 
 		worker.doWork.add(function(_)
 		{

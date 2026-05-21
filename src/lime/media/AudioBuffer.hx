@@ -341,7 +341,17 @@ class AudioBuffer
 
 	private static function __getCodec(bytes:Bytes):String
 	{
-		var signature = bytes.getString(0, 4);
+		var signature:String = null;
+
+		try
+		{
+			signature = bytes.getString(0, 4);
+		}
+		catch (e:Dynamic)
+		{
+			// A malformed/short or non-UTF8 header can throw here; fall through
+			// to the raw-byte MP3 detection below instead of crashing.
+		}
 
 		switch (signature)
 		{
