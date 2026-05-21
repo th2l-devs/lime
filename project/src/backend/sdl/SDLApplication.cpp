@@ -11,6 +11,16 @@
 #include "emscripten.h"
 #endif
 
+#ifdef LIME_FIX_FREEZE_WINDOW
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 
 namespace lime {
 
@@ -357,6 +367,7 @@ namespace lime {
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
 		SDL_AddEventWatch (ExposeEventWatcher, NULL);
+		SDL_SetWindowsMessageHook (WindowsMessageHook, NULL);
 		#endif
 
 		lastUpdate = SDL_GetTicks ();
@@ -884,6 +895,46 @@ namespace lime {
 		// (harmless) render once the modal loop ends; RenderFrame () has already
 		// advanced lastUpdate, so the next Update () does not see a deltaTime spike.
 		return 0;
+
+	}
+
+
+	// Arbitrary, unlikely-to-collide timer id for the modal-loop render timer.
+	static const UINT_PTR LIME_MODAL_TIMER_ID = 0x4C494D45; // 'LIME'
+
+	void SDLCALL SDLApplication::WindowsMessageHook (void* userdata, void* hWnd, unsigned int message, Uint64 wParam, Sint64 lParam) {
+
+		// The event watcher above keeps the window drawing while it is being *moved* or
+		// *resized*, but Windows fires no events when the user merely holds the title bar
+		// or opens the window menu — it sits in a modal loop (WM_ENTERSIZEMOVE /
+		// WM_ENTERMENULOOP) until the mouse moves, which still freezes the game. To cover
+		// that, arm a Win32 timer for the duration of the modal loop; each WM_TIMER is
+		// dispatched on the main thread by the modal loop, so RenderFrame () runs with the
+		// GL context current and the window keeps drawing even on a stationary hold.
+		switch (message) {
+
+			case WM_ENTERSIZEMOVE:
+			case WM_ENTERMENULOOP:
+
+				SetTimer ((HWND)hWnd, LIME_MODAL_TIMER_ID, USER_TIMER_MINIMUM, NULL);
+				break;
+
+			case WM_EXITSIZEMOVE:
+			case WM_EXITMENULOOP:
+
+				KillTimer ((HWND)hWnd, LIME_MODAL_TIMER_ID);
+				break;
+
+			case WM_TIMER:
+
+				if (wParam == LIME_MODAL_TIMER_ID && !inBackground && currentApplication != 0) {
+
+					currentApplication->RenderFrame ();
+
+				}
+				break;
+
+		}
 
 	}
 
