@@ -19,6 +19,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+// timeBeginPeriod/timeEndPeriod (winmm) — WIN32_LEAN_AND_MEAN omits mmsystem.h,
+// so pull in the multimedia timer API explicitly. winmm.lib is already linked.
+#include <timeapi.h>
 #endif
 
 
@@ -366,6 +369,12 @@ namespace lime {
 		active = true;
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
+		// Raise the Windows timer resolution to 1ms. Without this, SetTimer/WM_TIMER
+		// (the modal-loop render below) and SDL_Delay (the frame limiter in Update())
+		// are clamped to the default ~15.6ms scheduler tick, so resize-hold renders
+		// and the hybrid frame timer overshoot. Paired with timeEndPeriod in Quit().
+		timeBeginPeriod (1);
+
 		SDL_AddEventWatch (ExposeEventWatcher, NULL);
 		SDL_SetWindowsMessageHook (WindowsMessageHook, NULL);
 		#endif
@@ -845,6 +854,10 @@ namespace lime {
 
 
 	int SDLApplication::Quit () {
+
+		#ifdef LIME_FIX_FREEZE_WINDOW
+		timeEndPeriod (1);
+		#endif
 
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch (&applicationEvent);
