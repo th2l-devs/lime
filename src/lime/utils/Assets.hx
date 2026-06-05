@@ -407,7 +407,7 @@ class Assets
 		var path = id;
 		var rootPath = null;
 
-		if (bundlePaths.exists(id))
+		if (bundlePaths.exists(id) && id != "default")
 		{
 			AssetBundle.loadFromFile(bundlePaths.get(id)).onComplete(function(bundle)
 			{
