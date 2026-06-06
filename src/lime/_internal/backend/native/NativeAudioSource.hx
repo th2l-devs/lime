@@ -41,8 +41,10 @@ class NativeAudioSource
 	private var samples:Int;
 	private var stateTimer:Timer;
 	private var stream:Bool;
+	private var streamExhausted:Bool;
 	private var streamTimer:Timer;
 	private var timer:Timer;
+	private var timerDeadline:Float;
 
 	public function new(parent:AudioSource)
 	{
@@ -278,6 +280,10 @@ class NativeAudioSource
 				{
 					buffers = AL.sourceUnqueueBuffers(handle, buffersProcessed);
 				}
+				else
+				{
+					streamExhausted = true;
+				}
 			}
 		}
 
@@ -355,11 +361,25 @@ class NativeAudioSource
 	private function streamTimer_onRun():Void
 	{
 		refillBuffers();
+		if (playing && !completed && streamExhausted && handle != null
+			&& AL.getSourcei(handle, AL.SOURCE_STATE) == AL.STOPPED
+			&& AL.getSourcei(handle, AL.BUFFERS_PROCESSED) >= AL.getSourcei(handle, AL.BUFFERS_QUEUED))
+		{
+			timer_onRun();
+		}
 	}
 
 	private function stateTimer_onRun():Void
 	{
 		if (alSourceFinished()) timer_onRun();
+	}
+
+	private function armCompletionTimer(timeRemaining:Int):Void
+	{
+		if (timeRemaining < 1) timeRemaining = 1;
+		if (timer != null) timer.stop();
+		timer = new Timer(timeRemaining);
+		timer.run = timer_onRun;
 	}
 
 	private function timer_onRun():Void
@@ -415,6 +435,8 @@ class NativeAudioSource
 
 	public function setCurrentTime(value:Int):Int
 	{
+		streamExhausted = false;
+
 		// `setCurrentTime()` has side effects and is never safe to skip.
 		/* if (value == getCurrentTime())
 		{
@@ -455,21 +477,16 @@ class NativeAudioSource
 
 		if (playing)
 		{
-			if (timer != null)
-			{
-				timer.stop();
-			}
-
 			var timeRemaining = Std.int((getLength() - value) / getPitch());
 
 			if (timeRemaining > 0)
 			{
 				completed = false;
-				timer = new Timer(timeRemaining);
-				timer.run = timer_onRun;
+				armCompletionTimer(timeRemaining);
 			}
 			else
 			{
+				if (timer != null) timer.stop();
 				playing = false;
 				completed = true;
 			}
@@ -514,23 +531,14 @@ class NativeAudioSource
 	{
 		if (playing && length != value)
 		{
-			if (timer != null)
-			{
-				timer.stop();
-			}
-
 			if (alSourceFinished())
 			{
+				if (timer != null) timer.stop();
 				timer_onRun();
 			}
 			else
 			{
-				var timeRemaining = Std.int((value - getCurrentTime()) / getPitch());
-
-				if (timeRemaining < 1) timeRemaining = 1;
-
-				timer = new Timer(timeRemaining);
-				timer.run = timer_onRun;
+				armCompletionTimer(Std.int((value - getCurrentTime()) / getPitch()));
 			}
 		}
 
@@ -566,25 +574,25 @@ class NativeAudioSource
 
 	public function setPitch(value:Float):Float
 	{
+		if (value <= 0) value = 0.0001;
+
 		if (playing && value != getPitch())
 		{
-			if (timer != null)
-			{
-				timer.stop();
-			}
-
 			if (alSourceFinished())
 			{
+				if (timer != null) timer.stop();
 				timer_onRun();
 			}
 			else
 			{
 				var timeRemaining = Std.int((getLength() - getCurrentTime()) / value);
-
 				if (timeRemaining < 1) timeRemaining = 1;
 
-				timer = new Timer(timeRemaining);
-				timer.run = timer_onRun;
+				var newDeadline = Timer.stamp() + timeRemaining / 1000;
+				if (timer == null || Math.abs(newDeadline - timerDeadline) > 0.02)
+				{
+					armCompletionTimer(timeRemaining);
+				}
 			}
 		}
 
