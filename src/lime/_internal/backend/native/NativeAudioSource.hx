@@ -25,6 +25,7 @@ class NativeAudioSource
 	private static var STREAM_NUM_BUFFERS = 3;
 	#end
 	private static var STREAM_TIMER_FREQUENCY = 100;
+	private static var STATE_TIMER_FREQUENCY = 100;
 
 	private var buffers:Array<ALBuffer>;
 	private var bufferTimeBlocks:Array<Float>;
@@ -38,6 +39,7 @@ class NativeAudioSource
 	private var playing:Bool;
 	private var position:Vector4;
 	private var samples:Int;
+	private var stateTimer:Timer;
 	private var stream:Bool;
 	private var streamTimer:Timer;
 	private var timer:Timer;
@@ -188,6 +190,10 @@ class NativeAudioSource
 			var time = completed ? 0 : getCurrentTime();
 
 			setCurrentTime(time);
+
+			if (stateTimer != null) stateTimer.stop();
+			stateTimer = new Timer(STATE_TIMER_FREQUENCY);
+			stateTimer.run = stateTimer_onRun;
 		}
 	}
 
@@ -201,6 +207,11 @@ class NativeAudioSource
 		if (streamTimer != null)
 		{
 			streamTimer.stop();
+		}
+
+		if (stateTimer != null)
+		{
+			stateTimer.stop();
 		}
 
 		if (timer != null)
@@ -327,6 +338,11 @@ class NativeAudioSource
 			streamTimer.stop();
 		}
 
+		if (stateTimer != null)
+		{
+			stateTimer.stop();
+		}
+
 		if (timer != null)
 		{
 			timer.stop();
@@ -339,6 +355,11 @@ class NativeAudioSource
 	private function streamTimer_onRun():Void
 	{
 		refillBuffers();
+	}
+
+	private function stateTimer_onRun():Void
+	{
+		if (alSourceFinished()) timer_onRun();
 	}
 
 	private function timer_onRun():Void
@@ -540,7 +561,7 @@ class NativeAudioSource
 
 	private inline function alSourceFinished():Bool
 	{
-		return playing && handle != null && AL.getSourcei(handle, AL.SOURCE_STATE) == AL.STOPPED;
+		return playing && !stream && handle != null && AL.getSourcei(handle, AL.SOURCE_STATE) == AL.STOPPED;
 	}
 
 	public function setPitch(value:Float):Float
