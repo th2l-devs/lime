@@ -146,7 +146,12 @@ namespace lime {
 
 	}
 
-
+	/*This has been removed after updating to openal 1.20.0+ since the cleanup functions involved
+	* lead to deadlocking. See https://github.com/openfl/lime/issues/1803 for more info.
+	* Developers should use lime.system.System.exit() instead of Sys.exit() to clean up any system
+	* resources
+	*/
+	/*
 	void lime_al_atexit () {
 
 		ALCcontext* alcContext = alcGetCurrentContext ();
@@ -167,7 +172,7 @@ namespace lime {
 		}
 
 	}
-
+	*/
 
 	void lime_al_auxf (value aux, int param, float value) {
 
@@ -3387,7 +3392,7 @@ namespace lime {
 
 	HL_PRIM vbyte* HL_NAME(hl_alc_get_string) (HL_CFFIPointer* device, int param) {
 
-		ALCdevice* alcDevice = (ALCdevice*)device->ptr;
+		ALCdevice* alcDevice = device ? (ALCdevice*)device->ptr : 0;
 		const char* result = alcGetString (alcDevice, param);
 		int length = strlen (result);
 		char* _result = (char*)malloc (length + 1);
@@ -3416,7 +3421,8 @@ namespace lime {
 	value lime_alc_open_device (HxString devicename) {
 
 		ALCdevice* alcDevice = alcOpenDevice (devicename.__s);
-		atexit (lime_al_atexit);
+		//TODO: Can we work out our own cleanup for openal?
+		//atexit (lime_al_atexit);
 
 		value ptr = CFFIPointer (alcDevice, gc_alc_object);
 		alcObjects[alcDevice] = ptr;
@@ -3428,7 +3434,8 @@ namespace lime {
 	HL_PRIM HL_CFFIPointer* HL_NAME(hl_alc_open_device) (hl_vstring* devicename) {
 
 		ALCdevice* alcDevice = alcOpenDevice (devicename ? (char*)hl_to_utf8 ((const uchar*)devicename->bytes) : 0);
-		atexit (lime_al_atexit);
+		//TODO: Can we work out our own cleanup for openal?
+		//atexit (lime_al_atexit);
 
 		HL_CFFIPointer* ptr = HLCFFIPointer (alcDevice, (hl_finalizer)hl_gc_alc_object);
 		alcObjects[alcDevice] = ptr;

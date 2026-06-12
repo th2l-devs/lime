@@ -1,4 +1,4 @@
-package;
+﻿package;
 
 import hxp.ArrayTools;
 import hxp.Haxelib;
@@ -149,7 +149,7 @@ class AndroidPlatform extends PlatformTarget
 		var hasX64 = ArrayTools.containsValue(project.architectures, Architecture.X64);
 		var hasX86 = ArrayTools.containsValue(project.architectures, Architecture.X86);
 
-		var architectures = [];
+		var architectures:Array<Architecture> = [];
 
 		if (hasARM64) architectures.push(Architecture.ARM64);
 		if (hasARMV7) architectures.push(Architecture.ARMV7);
@@ -213,7 +213,7 @@ class AndroidPlatform extends PlatformTarget
 
 			System.runCommand("", "haxe", haxeParams);
 
-			if (noOutput) return;
+			if (noOutput) continue;
 
 			CPPHelper.compile(project, targetDirectory + "/obj", cppParams);
 
@@ -280,7 +280,7 @@ class AndroidPlatform extends PlatformTarget
 				build = "-release";
 			}
 
-			var outputDirectory = null;
+			var outputDirectory:String = null;
 			if (project.config.exists("android.gradle-build-directory"))
 			{
 				outputDirectory = Path.combine(project.config.getString("android.gradle-build-directory"), project.app.file + "/app/outputs/apk");
@@ -344,7 +344,7 @@ class AndroidPlatform extends PlatformTarget
 			}
 		}
 
-		var outputDirectory = null;
+		var outputDirectory:String = null;
 
 		if (project.config.exists("android.gradle-build-directory"))
 		{
@@ -367,8 +367,7 @@ class AndroidPlatform extends PlatformTarget
 		var x64 = ArrayTools.containsValue(project.architectures, Architecture.X64);
 		var x86 = (command == "rebuild" || ArrayTools.containsValue(project.architectures, Architecture.X86));
 
-		var commands = [];
-
+		var commands:Array<Array<String>> = [];
 		var minSDKVer = 21;
 		var platformDefine = '-DHXCPP_ANDROID_PLATFORM=$minSDKVer';
 
@@ -448,6 +447,11 @@ class AndroidPlatform extends PlatformTarget
 			project.haxeflags.push("-xml " + targetDirectory + "/types.xml");
 		}
 
+		if (project.targetFlags.exists("json"))
+		{
+			project.haxeflags.push("--json " + targetDirectory + "/types.json");
+		}
+
 		var context = project.templateContext;
 
 		for (asset in project.assets)
@@ -482,6 +486,7 @@ class AndroidPlatform extends PlatformTarget
 		context.ANDROID_GRADLE_PLUGIN = project.config.getString("android.gradle-plugin", "8.9.2");
 		context.ANDROID_USE_ANDROIDX = project.config.getString("android.useAndroidX", "true");
 		context.ANDROID_ENABLE_JETIFIER = project.config.getString("android.enableJetifier", "false");
+		context.ANDROID_GRADLE_PROPERTIES = project.config.getKeyValueArray("android.gradle-properties");
 		context.ANDROID_DISPLAY_CUTOUT = project.config.getString("android.layoutInDisplayCutoutMode", "shortEdges");
 
 		context.ANDROID_APPLICATION = project.config.getKeyValueArray("android.application", {
@@ -517,6 +522,31 @@ class AndroidPlatform extends PlatformTarget
 
 			Log.error("You must define ANDROID_SDK and ANDROID_NDK_ROOT to target Android, please run '" + command + " setup android' first");
 			Sys.exit(1);
+		}
+		else
+		{
+			var sdkPath = project.environment.get("ANDROID_SDK");
+			if (!FileSystem.exists(sdkPath))
+			{
+				Log.error("The path specified for ANDROID_SDK does not exist: " + sdkPath);
+				Sys.exit(1);
+			}
+			if (!FileSystem.isDirectory(sdkPath))
+			{
+				Log.error("The path specified for ANDROID_SDK must be a directory: " + sdkPath);
+				Sys.exit(1);
+			}
+			var ndkPath = project.environment.get("ANDROID_NDK_ROOT");
+			if (!FileSystem.exists(ndkPath))
+			{
+				Log.error("The path specified for ANDROID_NDK_ROOT does not exist: " + ndkPath);
+				Sys.exit(1);
+			}
+			if (!FileSystem.isDirectory(ndkPath))
+			{
+				Log.error("The path specified for ANDROID_NDK_ROOT must be a directory: " + ndkPath);
+				Sys.exit(1);
+			}
 		}
 
 		if (project.config.exists("android.gradle-build-directory"))
@@ -633,17 +663,17 @@ class AndroidPlatform extends PlatformTarget
 			{
 				if (FileSystem.isDirectory(javaPath))
 				{
-					System.recursiveCopy(javaPath, sourceSet + "/java", context, true);
+					recursiveCopy(javaPath, sourceSet + "/java", context, true);
 				}
 				else
 				{
 					if (Path.extension(javaPath) == "jar")
 					{
-						System.copyIfNewer(javaPath, destination + "/app/libs/" + Path.withoutDirectory(javaPath));
+						copyIfNewer(javaPath, destination + "/app/libs/" + Path.withoutDirectory(javaPath));
 					}
 					else
 					{
-						System.copyIfNewer(javaPath, sourceSet + "/java/" + Path.withoutDirectory(javaPath));
+						copyIfNewer(javaPath, sourceSet + "/java/" + Path.withoutDirectory(javaPath));
 					}
 				}
 			}
@@ -656,7 +686,7 @@ class AndroidPlatform extends PlatformTarget
 
 		for (library in cast(context.ANDROID_LIBRARY_PROJECTS, Array<Dynamic>))
 		{
-			System.recursiveCopy(library.source, destination + "/deps/" + library.name, context, true);
+			recursiveCopy(library.source, destination + "/deps/" + library.name, context, true);
 		}
 
 		ProjectHelper.recursiveSmartCopyTemplate(project, "android/template", destination, context);

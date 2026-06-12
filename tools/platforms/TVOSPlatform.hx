@@ -168,6 +168,11 @@ class TVOSPlatform extends PlatformTarget
 			project.haxeflags.push("-xml " + targetDirectory + "/types.xml");
 		}
 
+		if (project.targetFlags.exists("json"))
+		{
+			project.haxeflags.push("--json " + targetDirectory + "/types.json");
+		}
+
 		if (project.targetFlags.exists("final"))
 		{
 			project.haxedefs.set("final", "");
@@ -241,7 +246,7 @@ class TVOSPlatform extends PlatformTarget
 		context.VALID_ARCHS = valid_archs.join(" ");
 		context.THUMB_SUPPORT = "";
 
-		var requiredCapabilities = [];
+		var requiredCapabilities:Array<{name:String, value:Bool}> = [];
 
 		requiredCapabilities.push({name: "arm64", value: true});
 
@@ -262,22 +267,7 @@ class TVOSPlatform extends PlatformTarget
 		context.IOS_COMPILER = project.config.getString("tvos.compiler", "clang");
 		context.CPP_BUILD_LIBRARY = project.config.getString("cpp.buildLibrary", "hxcpp");
 
-		var json = Json.parse(File.getContent(Haxelib.getPath(new Haxelib("hxcpp"), true) + "/haxelib.json"));
-
-		var version = Std.string(json.version);
-		var versionSplit = version.split(".");
-
-		while (versionSplit.length > 2)
-			versionSplit.pop();
-
-		if (Std.parseFloat(versionSplit.join(".")) > 3.1)
-		{
-			context.CPP_LIBPREFIX = "lib";
-		}
-		else
-		{
-			context.CPP_LIBPREFIX = "";
-		}
+		context.CPP_CACHE_WORKAROUND = "unset HXCPP_COMPILE_CACHE;";
 
 		context.IOS_LINKER_FLAGS = ["-stdlib=libc++"].concat(project.config.getArrayString("tvos.linker-flags"));
 		context.IOS_NON_EXEMPT_ENCRYPTION = project.config.getBool("tvos.non-exempt-encryption", true);
@@ -305,9 +295,9 @@ class TVOSPlatform extends PlatformTarget
 
 		for (dependency in project.dependencies)
 		{
-			var name = null;
-			var path = null;
-			var fileType = null;
+			var name:String = null;
+			var path:String = null;
+			var fileType:String = null;
 
 			if (Path.extension(dependency.name) == "framework")
 			{
@@ -371,7 +361,12 @@ class TVOSPlatform extends PlatformTarget
 	{
 		var path = targetDirectory + "/" + project.app.file + "/haxe/Build.hxml";
 
-		if (FileSystem.exists(path))
+		// try to use the existing .hxml file. however, if the project file was
+		// modified more recently than the .hxml, then the .hxml cannot be
+		// considered valid anymore. it may cause errors in editors like vscode.
+		if (FileSystem.exists(path)
+			&& (project.projectFilePath == null || !FileSystem.exists(project.projectFilePath)
+				|| (FileSystem.stat(path).mtime.getTime() > FileSystem.stat(project.projectFilePath).mtime.getTime())))
 		{
 			return File.getContent(path);
 		}
@@ -395,7 +390,7 @@ class TVOSPlatform extends PlatformTarget
 		var i386 = (command == "rebuild" || project.targetFlags.exists("simulator"));
 		var x86_64 = (command == "rebuild" || project.targetFlags.exists("simulator"));
 
-		var commands = [];
+		var commands:Array<Array<String>> = [];
 
 		if (arm64) commands.push([
 			"-Dtvos",
@@ -628,7 +623,7 @@ class TVOSPlatform extends PlatformTarget
 						fileName = "lib" + fileName;
 					}
 
-					System.copyIfNewer(dependency.path, projectDirectory + "/lib/" + arch + "/" + fileName);
+					copyIfNewer(dependency.path, projectDirectory + "/lib/" + arch + "/" + fileName);
 				}
 			}
 		}

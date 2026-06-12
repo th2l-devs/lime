@@ -544,7 +544,7 @@ class HXProject extends Script
 		}
 
 		var files = ["include.lime", "include.nmml", "include.xml", "include.hxp"];
-		var projectFile = null;
+		var projectFile:String = null;
 
 		for (file in files)
 		{
@@ -555,7 +555,7 @@ class HXProject extends Script
 			}
 		}
 
-		var project = null;
+		var project:HXProject = null;
 
 		if (projectFile != null)
 		{
@@ -756,7 +756,7 @@ class HXProject extends Script
 			defines.set("uwp", "1");
 			defines.set("winjs", "1");
 		}
-		else if (platformType == DESKTOP && target != cast System.hostPlatform)
+		else if (platformType == DESKTOP && target != System.hostPlatform)
 		{
 			defines.set("native", "1");
 
@@ -855,7 +855,7 @@ class HXProject extends Script
 		{
 			if (_target == null)
 			{
-				_target = cast System.hostPlatform;
+				_target = System.hostPlatform;
 			}
 
 			if (_targetFlags == null)
@@ -1061,7 +1061,7 @@ class HXProject extends Script
 	// Getters & Setters
 	private function get_host():Platform
 	{
-		return cast System.hostPlatform;
+		return System.hostPlatform;
 	}
 
 	private function get_templateContext():Dynamic
@@ -1220,7 +1220,7 @@ class HXProject extends Script
 		// Reflect.setField (context, "sslCaCert", sslCaCert);
 		context.sslCaCert = "";
 
-		var compilerFlags = [];
+		var compilerFlags:Array<String> = [];
 
 		for (haxelib in haxelibs)
 		{
@@ -1271,7 +1271,7 @@ class HXProject extends Script
 				Log.verbose = cache;
 
 				var split = output != null ? output.split("\n") : [];
-				var haxelibName = null;
+				var haxelibName:String = null;
 
 				for (arg in split)
 				{

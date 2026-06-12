@@ -73,6 +73,7 @@ namespace lime {
 			Uint64 lastUpdate;
 			Uint64 nextUpdate;
 			double framePeriod;
+			Uint32 initFlags;
 			DropEvent dropEvent;
 			GamepadEvent gamepadEvent;
 			JoystickEvent joystickEvent;
