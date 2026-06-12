@@ -563,10 +563,18 @@ class AssetHelper
 				{
 					manifest = createManifest(project, library.name != DEFAULT_LIBRARY_NAME ? library.name : null);
 					embed = false;
+					var fileFallback = false;
 
 					if (manifest.assets.length == 0 || (project.target == HTML5 && library.name == DEFAULT_LIBRARY_NAME))
 					{
 						embed = true;
+					}
+					else if ((project.target == WINDOWS || project.target == MAC || project.target == LINUX)
+						&& library.embed != false
+						&& !project.haxedefs.exists("file_manifest"))
+					{
+						embed = true;
+						fileFallback = true;
 					}
 					else
 					{
@@ -584,6 +592,18 @@ class AssetHelper
 						}
 
 						if (allEmbedded) embed = true;
+					}
+
+					if (fileFallback)
+					{
+						asset = new Asset("", "manifest/" + library.name + ".json", AssetType.MANIFEST);
+						asset.embed = false;
+						asset.library = library.name;
+						manifest.rootPath = "../";
+						asset.data = manifest.serialize();
+						manifest.rootPath = null;
+
+						project.assets.push(asset);
 					}
 
 					asset = new Asset("", "manifest/" + library.name + ".json", AssetType.MANIFEST);

@@ -459,7 +459,7 @@ class Assets
 			{
 				if (manifest == null)
 				{
-					promise.error("Cannot parse asset manifest for library \"" + id + "\"");
+					promise.error("Cannot parse asset manifest for library \"" + id + "\" (" + path + ")");
 					return;
 				}
 
@@ -477,7 +477,7 @@ class Assets
 				}
 			}).onError(function(_)
 			{
-					promise.error("There is no asset library with an ID of \"" + id + "\"");
+					promise.error("There is no asset library with an ID of \"" + id + "\" (could not load \"" + path + "\")");
 			});
 		}
 		#end
