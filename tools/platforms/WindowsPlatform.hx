@@ -224,6 +224,23 @@ class WindowsPlatform extends PlatformTarget
 		}
 	}
 
+	private function killRunningExecutable():Void
+	{
+		if (executablePath == null || !FileSystem.exists(executablePath)) return;
+
+		if (project.haxedefs.exists("no_kill_running") || project.targetFlags.exists("no-kill-running")) return;
+
+		var exeName = Path.withoutDirectory(executablePath);
+
+		try
+		{
+			// /F force, /IM by image name; ignoreErrors so a "not running" exit
+			// code (no matching process) doesn't abort the build
+			System.runProcess("", "taskkill", ["/F", "/IM", exeName], true, true, true);
+		}
+		catch (e:Dynamic) {}
+	}
+
 	public override function build():Void
 	{
 		var hxml = targetDirectory + "/haxe/" + buildType + ".hxml";
@@ -288,6 +305,8 @@ class WindowsPlatform extends PlatformTarget
 		}
 		else
 		{
+			killRunningExecutable();
+
 			for (dependency in project.dependencies)
 			{
 				if (StringTools.endsWith(dependency.path, ".dll"))
