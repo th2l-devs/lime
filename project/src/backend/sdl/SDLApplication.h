@@ -58,6 +58,7 @@ namespace lime {
 			#ifdef LIME_FIX_FREEZE_WINDOW
 			static int SDLCALL ExposeEventWatcher (void* userdata, SDL_Event* event);
 			static void SDLCALL WindowsMessageHook (void* userdata, void* hWnd, unsigned int message, Uint64 wParam, Sint64 lParam);
+			static void __stdcall ModalRenderTimerProc (void* hWnd, unsigned int message, size_t idTimer, unsigned long dwTime);
 			#endif
 
 			static void UpdateFrame ();

@@ -226,9 +226,12 @@ class WindowsPlatform extends PlatformTarget
 
 	private function killRunningExecutable():Void
 	{
-		if (executablePath == null || !FileSystem.exists(executablePath)) return;
+		if (executablePath == null) return;
 
 		if (project.haxedefs.exists("no_kill_running") || project.targetFlags.exists("no-kill-running")) return;
+
+		// Only kill if a running instance is locking a file we must overwrite.
+		if (!isOutputFileLocked()) return;
 
 		var exeName = Path.withoutDirectory(executablePath);
 
@@ -239,6 +242,29 @@ class WindowsPlatform extends PlatformTarget
 			System.runProcess("", "taskkill", ["/F", "/IM", exeName], true, true, true);
 		}
 		catch (e:Dynamic) {}
+	}
+
+	private function isOutputFileLocked():Bool
+	{
+		// Probe for a lock by opening for append (write access) without writing.
+		var candidates = [applicationDirectory + "lime.ndll", executablePath];
+
+		for (path in candidates)
+		{
+			if (path == null || !FileSystem.exists(path)) continue;
+
+			try
+			{
+				var output = File.append(path, true);
+				output.close();
+			}
+			catch (e:Dynamic)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	public override function build():Void
@@ -820,7 +846,8 @@ class WindowsPlatform extends PlatformTarget
 		{
 			// arguments = arguments.concat(["-livereload"]);
 			arguments = ["script.cppia"]; // .concat(arguments);
-			System.runCommand(applicationDirectory, Path.withoutDirectory(executablePath), arguments);
+			// ".\" so the shell finds it when NoDefaultCurrentDirectoryInExePath is set
+			System.runCommand(applicationDirectory, ".\\" + Path.withoutDirectory(executablePath), arguments);
 		}
 		else if (targetType == "winjs")
 		{
@@ -907,7 +934,8 @@ class WindowsPlatform extends PlatformTarget
 		else if (project.target == cast System.hostPlatform)
 		{
 			arguments = arguments.concat(["-livereload"]);
-			System.runCommand(applicationDirectory, Path.withoutDirectory(executablePath), arguments);
+			// ".\" so the shell finds it when NoDefaultCurrentDirectoryInExePath is set
+			System.runCommand(applicationDirectory, ".\\" + Path.withoutDirectory(executablePath), arguments);
 		}
 	}
 
