@@ -48,7 +48,8 @@ class AndroidHelper
 		}
 		else
 		{
-			System.runCommand(projectDirectory, "gradlew", args);
+			// ".\" so the shell finds it when NoDefaultCurrentDirectoryInExePath is set
+			System.runCommand(projectDirectory, ".\\gradlew", args);
 		}
 	}
 

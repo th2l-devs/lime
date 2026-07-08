@@ -79,6 +79,22 @@ class FlashAudioSource
 		return value;
 	}
 
+	public function getCurrentTimePrecise():Float
+	{
+		if (channel != null)
+		{
+			return channel.position - parent.offset;
+		}
+
+		return 0;
+	}
+
+	public function setCurrentTimePrecise(value:Float):Float
+	{
+		setCurrentTime(Std.int(value));
+		return value;
+	}
+
 	public function getGain():Float
 	{
 		return channel.soundTransform.volume;

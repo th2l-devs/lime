@@ -14,6 +14,14 @@ class AudioSource
 	public var onComplete = new Event<Void->Void>();
 	public var buffer:AudioBuffer;
 	public var currentTime(get, set):Int;
+
+	/**
+		Playback position in milliseconds as a `Float`, seeking with sample accuracy where the
+		backend supports it (the native/OpenAL backend does). `currentTime` quantizes to whole
+		milliseconds on both read and write, which is audible drift for rhythm/sync-critical
+		code - use this instead.
+	**/
+	public var currentTimePrecise(get, set):Float;
 	public var gain(get, set):Float;
 	public var length(get, set):Int;
 	public var loops(get, set):Int;
@@ -77,6 +85,16 @@ class AudioSource
 	@:noCompletion private function set_currentTime(value:Int):Int
 	{
 		return __backend.setCurrentTime(value);
+	}
+
+	@:noCompletion private function get_currentTimePrecise():Float
+	{
+		return __backend.getCurrentTimePrecise();
+	}
+
+	@:noCompletion private function set_currentTimePrecise(value:Float):Float
+	{
+		return __backend.setCurrentTimePrecise(value);
 	}
 
 	@:noCompletion private function get_gain():Float

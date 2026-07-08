@@ -152,6 +152,43 @@ class HTML5AudioSource
 		return value;
 	}
 
+	public function getCurrentTimePrecise():Float
+	{
+		if (id == -1)
+		{
+			return 0;
+		}
+
+		#if lime_howlerjs
+		if (completed)
+		{
+			return getLength();
+		}
+		else if (parent.buffer != null && parent.buffer.__srcHowl != null)
+		{
+			var time:Float = parent.buffer.__srcHowl.seek(id) * 1000 - parent.offset;
+			if (time < 0) return 0;
+			return time;
+		}
+		#end
+
+		return 0;
+	}
+
+	public function setCurrentTimePrecise(value:Float):Float
+	{
+		#if lime_howlerjs
+		if (parent.buffer != null && parent.buffer.__srcHowl != null)
+		{
+			var pos = (value + parent.offset) / 1000;
+			if (pos < 0) pos = 0;
+			parent.buffer.__srcHowl.seek(pos, id);
+		}
+		#end
+
+		return value;
+	}
+
 	public function getGain():Float
 	{
 		return gain;

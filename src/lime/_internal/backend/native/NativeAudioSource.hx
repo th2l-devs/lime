@@ -404,30 +404,33 @@ class NativeAudioSource
 	// Get & Set Methods
 	public function getCurrentTime():Int
 	{
+		return Std.int(getCurrentTimePrecise());
+	}
+
+	public function getCurrentTimePrecise():Float
+	{
 		if (completed)
 		{
 			return getLength();
 		}
 		else if (handle != null)
 		{
+			var time:Float;
+
 			if (stream)
 			{
-				var time = (Std.int(bufferTimeBlocks[0] * 1000) + Std.int(AL.getSourcef(handle, AL.SEC_OFFSET) * 1000)) - parent.offset;
-				if (time < 0) return 0;
-				return time;
+				time = (bufferTimeBlocks[0] + AL.getSourcef(handle, AL.SEC_OFFSET)) * 1000 - parent.offset;
 			}
 			else
 			{
-				var offset = AL.getSourcei(handle, AL.BYTE_OFFSET);
-				var ratio = (offset / dataLength);
-				var totalSeconds = samples / parent.buffer.sampleRate;
-
-				var time = Std.int(totalSeconds * ratio * 1000) - parent.offset;
-
-				// var time = Std.int (AL.getSourcef (handle, AL.SEC_OFFSET) * 1000) - parent.offset;
-				if (time < 0) return 0;
-				return time;
+				// SAMPLE_OFFSET reads the exact playback sample, unlike the millisecond-quantized
+				// byte-ratio math this used to do.
+				var sampleOffset = AL.getSourcei(handle, AL.SAMPLE_OFFSET);
+				time = (sampleOffset / parent.buffer.sampleRate) * 1000 - parent.offset;
 			}
+
+			if (time < 0) return 0;
+			return time;
 		}
 
 		return 0;
@@ -435,13 +438,15 @@ class NativeAudioSource
 
 	public function setCurrentTime(value:Int):Int
 	{
+		setCurrentTimePrecise(value);
+		return value;
+	}
+
+	public function setCurrentTimePrecise(value:Float):Float
+	{
 		streamExhausted = false;
 
-		// `setCurrentTime()` has side effects and is never safe to skip.
-		/* if (value == getCurrentTime())
-		{
-			return value;
-		} */
+		// Seeking has side effects and is never safe to skip, even for value == currentTime.
 
 		if (handle != null)
 		{
@@ -459,18 +464,13 @@ class NativeAudioSource
 			{
 				AL.sourceRewind(handle);
 
-				// AL.sourcef (handle, AL.SEC_OFFSET, (value + parent.offset) / 1000);
+				// Seek by sample index: sample-accurate, and always frame-aligned (a rounded raw
+				// BYTE_OFFSET can land mid-sample-frame on multi-channel formats).
+				var targetSample = Math.round((value + parent.offset) / 1000 * parent.buffer.sampleRate);
+				if (targetSample < 0) targetSample = 0;
+				if (targetSample > samples) targetSample = samples;
 
-				var secondOffset = (value + parent.offset) / 1000;
-				var totalSeconds = samples / parent.buffer.sampleRate;
-
-				if (secondOffset < 0) secondOffset = 0;
-				if (secondOffset > totalSeconds) secondOffset = totalSeconds;
-
-				var ratio = (secondOffset / totalSeconds);
-				var totalOffset = Std.int(dataLength * ratio);
-
-				AL.sourcei(handle, AL.BYTE_OFFSET, totalOffset);
+				AL.sourcei(handle, AL.SAMPLE_OFFSET, targetSample);
 				if (playing) AL.sourcePlay(handle);
 			}
 		}
