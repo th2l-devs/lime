@@ -7,10 +7,6 @@ import lime.utils.AssetLibrary;
 import lime.utils.AssetManifest;
 import lime.utils.Assets;
 
-#if sys
-import sys.FileSystem;
-#end
-
 #if disable_preloader_assets
 @:dox(hide) class ManifestResources {
 	public static var preloadLibraries:Array<Dynamic>;
@@ -74,19 +70,11 @@ import sys.FileSystem;
 
 		var data, manifest, library, bundle;
 
-		::if (assets != null)::::foreach assets::::if (type == "manifest")::::if (embed)::if (!Assets.libraryPaths.exists ("::library::")) {
-
-			data = '::data::';
-			manifest = AssetManifest.parse (data, rootPath);
-			library = AssetLibrary.fromManifest (manifest);
-			Assets.registerLibrary ("::library::", library);
-
-		}
-		::else::#if sys
-		if (FileSystem.exists (rootPath + "::resourceName::")) Assets.libraryPaths["::library::"] = rootPath + "::resourceName::";
-		#else
-		Assets.libraryPaths["::library::"] = rootPath + "::resourceName::";
-		#end
+		::if (assets != null)::::foreach assets::::if (type == "manifest")::::if (embed)::data = '::data::';
+		manifest = AssetManifest.parse (data, rootPath);
+		library = AssetLibrary.fromManifest (manifest);
+		Assets.registerLibrary ("::library::", library);
+		::else::Assets.libraryPaths["::library::"] = rootPath + "::resourceName::";
 		::end::::end::::if (type == "bundle")::::if (embed)::
 		bundle = AssetBundle.fromBytes (#if flash Bytes.ofData (new __ASSET__::flatName:: () #else new __ASSET__::flatName:: () #end));
 		library = AssetLibrary.fromBundle (bundle);
