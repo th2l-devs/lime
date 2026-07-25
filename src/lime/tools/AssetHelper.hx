@@ -399,8 +399,17 @@ class AssetHelper
 		}
 	}
 
+	private static function isDotfileAsset(asset:Asset):Bool
+	{
+		var name = Path.withoutDirectory((asset.targetPath != null && asset.targetPath != "") ? asset.targetPath : asset.sourcePath);
+		return name != null && name.length > 0 && name.charAt(0) == ".";
+	}
+
 	public static function processLibraries(project:HXProject, targetDirectory:String = null):Void
 	{
+		// Drop dotfiles; aapt strips them from the APK, so a manifest entry would crash the preloader.
+		project.assets = project.assets.filter(function(asset) return !isDotfileAsset(asset));
+
 		var hasManifest = new Map<String, Bool>();
 		var libraryMap = new Map<String, Bool>();
 

@@ -919,14 +919,17 @@ class AssetLibrary
 
 	@:noCompletion private function load_onError(id:String, message:Dynamic):Void
 	{
+		// Warn and continue instead of rejecting the whole library, so one bad asset can't brick startup.
 		if (message != null && message != "")
 		{
-			promise.error("Error loading asset \"" + id + "\": " + Std.string(message));
+			Log.warn("Could not load asset \"" + id + "\": " + Std.string(message));
 		}
 		else
 		{
-			promise.error("Error loading asset \"" + id + "\"");
+			Log.warn("Could not load asset \"" + id + "\"");
 		}
+
+		__assetLoaded(id);
 	}
 
 	@:noCompletion private function load_onProgress(id:String, bytesLoaded:Int, bytesTotal:Int):Void
