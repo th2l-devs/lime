@@ -385,6 +385,27 @@ class AL
 		#end
 	}
 
+	public static function deleteAux(auxiliaryEffectSlot:ALAuxiliaryEffectSlot):Void
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		NativeCFFI.lime_al_delete_auxiliary_effect_slot(auxiliaryEffectSlot);
+		#end
+	}
+
+	public static function deleteEffect(effect:ALEffect):Void
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		NativeCFFI.lime_al_delete_effect(effect);
+		#end
+	}
+
+	public static function deleteFilter(filter:ALFilter):Void
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		NativeCFFI.lime_al_delete_filter(filter);
+		#end
+	}
+
 	public static function createSource():ALSource
 	{
 		#if (lime_cffi && lime_openal && !macro)
