@@ -606,6 +606,9 @@ class NativeApplication
 					AudioManager.resume();
 
 				case WINDOW_CLOSE:
+					#if lime_telemetry
+					lime.system.Telemetry.close();
+					#end
 					window.close();
 
 				case WINDOW_DEACTIVATE:

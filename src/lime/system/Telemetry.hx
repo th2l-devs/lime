@@ -816,11 +816,20 @@ class Telemetry
 	}
 	#end
 
-	/** Flushes remaining samples, writes the summary, and closes the stream. */
+	#if (lime_telemetry && !macro)
+	private static var closed:Bool = false;
+	#end
+
+	/**
+		Flushes remaining samples, writes the summary and chart, and closes the stream.
+		Safe to call more than once - only the first call does the work, because it is
+		hooked from both the window-close event and `System.exit`.
+	**/
 	public static function close():Void
 	{
 		#if (lime_telemetry && !macro)
-		if (times == null) return;
+		if (times == null || closed) return;
+		closed = true;
 
 		var report = summary();
 		Log.info(report);

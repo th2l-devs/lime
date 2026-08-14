@@ -195,6 +195,12 @@ class System
 	**/
 	public static function exit(code:Int):Void
 	{
+		#if lime_telemetry
+		// here as well as on window close: most apps quit through this, which never
+		// returns, so the exec()-return hook alone would never fire
+		lime.system.Telemetry.close();
+		#end
+
 		var currentApp = Application.current;
 		#if ((sys || (js && html5) || air) && !macro)
 		if (currentApp != null)
