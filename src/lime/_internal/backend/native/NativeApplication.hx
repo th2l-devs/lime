@@ -162,7 +162,7 @@ class NativeApplication
 		var result = NativeCFFI.lime_application_exec(handle);
 
 		#if lime_telemetry
-		if (lime.system.Telemetry.autoSave) lime.system.Telemetry.save(lime.system.Telemetry.autoSavePath);
+		lime.system.Telemetry.close();
 		#end
 
 		#if (!webassembly && !ios && !nodejs)
@@ -202,7 +202,7 @@ class NativeApplication
 				updateTimer();
 
 				#if lime_telemetry
-				lime.system.Telemetry.beginFrame();
+				lime.system.Telemetry.beginFrame(applicationEventInfo.deltaTime);
 				#end
 
 				parent.onUpdate.dispatch(applicationEventInfo.deltaTime);
@@ -453,8 +453,20 @@ class NativeApplication
 
 						if (!window.onRender.canceled)
 						{
+							#if lime_telemetry
+							if (telemetryThis) lime.system.Telemetry.beginSwap();
+							#end
+
 							window.__backend.contextFlip();
+
+							#if lime_telemetry
+							if (telemetryThis) lime.system.Telemetry.endSwap();
+							#end
 						}
+
+						#if lime_telemetry
+						if (telemetryThis) lime.system.Telemetry.endFrame();
+						#end
 					}
 
 				case RENDER_CONTEXT_LOST:
