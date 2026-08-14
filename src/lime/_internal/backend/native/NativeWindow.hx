@@ -146,7 +146,15 @@ class NativeWindow
 				context.type = gl.type;
 				context.version = Std.string(gl.version);
 
-				if (gl.type == OPENGLES && gl.version >= 3)
+				// GLES 3 and desktop GL 3.3 both cover the WebGL2 feature set - instanced arrays,
+				// fence sync, mapBufferRange, texture storage - and on desktop they resolve
+				// through the same dynamic extension loader either way. Without the desktop half
+				// of this test, `webgl2` is null on every native GL build, so anything gated on
+				// it reports unsupported no matter what the driver actually offers.
+				//
+				// macOS falls out of this naturally: its compatibility profile caps at 2.1, and
+				// the core profiles above that are unusable by the renderer.
+				if ((gl.type == OPENGLES && gl.version >= 3) || (gl.type == OPENGL && gl.version >= 3.3))
 				{
 					context.gles3 = gl;
 					context.webgl2 = gl;

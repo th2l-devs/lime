@@ -11,10 +11,25 @@
 #endif
 
 
-#if defined (HX_WINDOWS) && !defined (NATIVE_TOOLKIT_SDL_ANGLE)
+// Desktop GL targets that negotiate an explicit context version. Windows and Linux both reach GL
+// through the same dynamic extension loader (DYNAMIC_OGL, see graphics/opengl/OpenGL.h) and both
+// expose compatibility profiles above 2.1, so the same negotiation applies to each.
+//
+// Deliberately excluded:
+//   ANGLE and Raspberry Pi already request a GLES context a few lines below, and would fight
+//   with this one.
+//   macOS caps its compatibility profile at 2.1 - anything higher is core-only there, which the
+//   renderer cannot use (see LIME_GL_CONTEXT_PROFILE) - so negotiation could only ever fail
+//   through every rung and land back on the default it starts from.
+#if (defined (HX_WINDOWS) || defined (HX_LINUX)) && !defined (NATIVE_TOOLKIT_SDL_ANGLE) && !defined (RASPBERRYPI)
+#define LIME_GL_NEGOTIATE_CONTEXT 1
+#endif
 
-// The GL context desktop Windows asks for. Each of these may be overridden at build time, but
-// read the caveats first - they are not independent knobs.
+
+#ifdef LIME_GL_NEGOTIATE_CONTEXT
+
+// The GL context desktop Windows and Linux ask for. Each of these may be overridden at build
+// time, but read the caveats first - they are not independent knobs.
 //
 // LIME_GL_CONTEXT_PROFILE defaults to compatibility rather than core on purpose. Core profile
 // removes the default vertex array object (VAO 0), so a draw call with no VAO bound is invalid,
@@ -129,7 +144,7 @@ namespace lime {
 			SDL_SetHint (SDL_HINT_VIDEO_WIN_D3DCOMPILER, "d3dcompiler_47.dll");
 			#endif
 
-			#if defined (HX_WINDOWS) && !defined (NATIVE_TOOLKIT_SDL_ANGLE)
+			#ifdef LIME_GL_NEGOTIATE_CONTEXT
 			// Ask for a specific GL version instead of accepting whatever the driver hands back.
 			// Without this, entry points gated on 4.x - glBufferStorage, direct state access,
 			// glTextureBarrier, glMultiDraw*Indirect - may resolve to null with nothing to
@@ -270,7 +285,7 @@ namespace lime {
 
 			context = SDL_GL_CreateContext (sdlWindow);
 
-			#if defined (HX_WINDOWS) && !defined (NATIVE_TOOLKIT_SDL_ANGLE)
+			#ifdef LIME_GL_NEGOTIATE_CONTEXT
 			if (!context) {
 
 				// Negotiate downward rather than failing outright. On Windows the version and
@@ -339,7 +354,7 @@ namespace lime {
 
 				}
 
-				#if defined (HX_WINDOWS) && !defined (NATIVE_TOOLKIT_SDL_ANGLE)
+				#ifdef LIME_GL_NEGOTIATE_CONTEXT
 				if (context && version < LIME_GL_CONTEXT_VERSION_MAJOR) {
 
 					// The negotiation above settled for less than was asked for. Say so once,
