@@ -4,6 +4,7 @@ package lime.media.openal;
 import lime._internal.backend.native.NativeCFFI;
 import lime.system.CFFIPointer;
 import lime.utils.ArrayBufferView;
+import lime.utils.Log;
 
 #if !lime_debug
 @:fileXml('tags="haxe,release"')
@@ -238,6 +239,114 @@ class AL
 	{
 		#if (lime_cffi && lime_openal && !macro)
 		NativeCFFI.lime_al_remove_direct_filter(source);
+		#end
+	}
+
+	// getErrorString() calls getError() itself, which consumes the error, so map the code here instead.
+	private static function errorName(err:Int):String
+	{
+		return switch (err)
+		{
+			case INVALID_NAME: "INVALID_NAME";
+			case INVALID_ENUM: "INVALID_ENUM";
+			case INVALID_VALUE: "INVALID_VALUE";
+			case INVALID_OPERATION: "INVALID_OPERATION";
+			case OUT_OF_MEMORY: "OUT_OF_MEMORY";
+			default: "UNKNOWN";
+		}
+	}
+
+	// Logs the pending AL error (if any) against a label. Returns true when an error was pending.
+	public static function checkError(label:String):Bool
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		var err = getError();
+
+		if (err != NO_ERROR)
+		{
+			Log.warn('[AL] $label -> ' + errorName(err) + ' (0x' + StringTools.hex(err) + ")");
+			return true;
+		}
+
+		Log.info('[AL] $label -> ok');
+		#else
+		Log.warn('[AL] $label -> openal not compiled in (lime_openal off)');
+		#end
+		return false;
+	}
+
+	// One-shot EFX probe: says whether filters can be created at all on this device.
+	public static function efxReport():String
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		getError();
+
+		var filter = createFilter();
+
+		if (filter == null)
+		{
+			// alGenFilters' error is consumed natively, so null is the only signal here
+			return "[AL] EFX filters UNAVAILABLE - createFilter() returned null (device has no EFX, or LIME_OPENALSOFT is off)";
+		}
+
+		filteri(filter, FILTER_TYPE, FILTER_LOWPASS);
+		var typeErr = getError();
+		deleteFilter(filter);
+
+		if (typeErr != NO_ERROR)
+		{
+			return "[AL] EFX present but FILTER_LOWPASS rejected - " + errorName(typeErr);
+		}
+
+		return "[AL] EFX filters available (lowpass ok)";
+		#else
+		return "[AL] openal not compiled in (lime_openal off)";
+		#end
+	}
+
+	// Attaches a lowpass to `source`, logging every step. gainHF is the actual
+	// muffling amount (0 = fully muffled, 1 = no effect); gain is flat attenuation.
+	public static function debugLowpass(source:ALSource, gainHF:Float = 0.1, gain:Float = 1.0):ALFilter
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		Log.info(efxReport());
+
+		if (source == null)
+		{
+			Log.warn("[AL] debugLowpass: source is null - nothing to attach to");
+			return null;
+		}
+
+		getError();
+
+		var filter = createFilter();
+		checkError("createFilter");
+
+		if (filter == null)
+		{
+			Log.warn("[AL] debugLowpass: createFilter returned null, aborting");
+			return null;
+		}
+
+		filteri(filter, FILTER_TYPE, FILTER_LOWPASS);
+		checkError("filteri(FILTER_TYPE, FILTER_LOWPASS)");
+
+		filterf(filter, LOWPASS_GAIN, gain);
+		checkError('filterf(LOWPASS_GAIN, $gain)');
+
+		filterf(filter, LOWPASS_GAINHF, gainHF);
+		checkError('filterf(LOWPASS_GAINHF, $gainHF)');
+
+		sourcei(source, DIRECT_FILTER, filter);
+		checkError("sourcei(DIRECT_FILTER)");
+
+		Log.info('[AL] debugLowpass: attached (gain=$gain gainHF=$gainHF). If this logged ok but you hear no change, '
+			+ "the AL source handle likely changed after attaching (re-attach after play), or gainHF is too high to notice.");
+
+		return filter;
+		#else
+		Log.warn("[AL] debugLowpass: openal not compiled in");
+		return null;
 		#end
 	}
 

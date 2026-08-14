@@ -161,6 +161,10 @@ class NativeApplication
 		#elseif lime_cffi
 		var result = NativeCFFI.lime_application_exec(handle);
 
+		#if lime_telemetry
+		if (lime.system.Telemetry.autoSave) lime.system.Telemetry.save(lime.system.Telemetry.autoSavePath);
+		#end
+
 		#if (!webassembly && !ios && !nodejs)
 		parent.onExit.dispatch(result);
 		#end
@@ -197,7 +201,15 @@ class NativeApplication
 			case UPDATE:
 				updateTimer();
 
+				#if lime_telemetry
+				lime.system.Telemetry.beginFrame();
+				#end
+
 				parent.onUpdate.dispatch(applicationEventInfo.deltaTime);
+
+				#if lime_telemetry
+				lime.system.Telemetry.endUpdate();
+				#end
 
 			default:
 		}
@@ -406,6 +418,10 @@ class NativeApplication
 	{
 		// TODO: Allow windows to render independently
 
+		#if lime_telemetry
+		var telemetryDone = false;
+		#end
+
 		for (window in parent.__windows)
 		{
 			if (window == null) continue;
@@ -417,8 +433,23 @@ class NativeApplication
 				case RENDER:
 					if (window.context != null)
 					{
+						#if lime_telemetry
+						// only the first window contributes a sample; the buffer swap below is
+						// deliberately outside the bracket so vsync waits stay out of cpu/gpu time
+						var telemetryThis = !telemetryDone;
+						if (telemetryThis)
+						{
+							telemetryDone = true;
+							lime.system.Telemetry.beginRender();
+						}
+						#end
+
 						window.__backend.render();
 						window.onRender.dispatch(window.context);
+
+						#if lime_telemetry
+						if (telemetryThis) lime.system.Telemetry.endRender();
+						#end
 
 						if (!window.onRender.canceled)
 						{
