@@ -121,6 +121,14 @@ class Telemetry
 	private static var stallCount:Int = 0;
 	private static var stallTotalMs:Float = 0;
 
+	// High-resolution clock, resolved once in init(). See now().
+	private static var perfFrequency:Float = 0;
+	private static var perfOrigin:Float = 0;
+
+	// Above this, a reported frame delta is not a frame. The first UPDATE event after startup
+	// carries an absolute timestamp rather than an interval, which lands around 1.8e12 ms
+	private static inline var MAX_PLAUSIBLE_FRAME_MS:Float = 60000;
+
 	#if sys
 	private static var output:FileOutput;
 	private static var resolvedPath:String;
@@ -132,6 +140,11 @@ class Telemetry
 
 	private static function init():Void
 	{
+		#if (lime_cffi && !macro)
+		perfFrequency = System.getPerformanceFrequency();
+		perfOrigin = (perfFrequency > 0) ? System.getPerformanceCounter() : 0;
+		#end
+
 		times = [];
 		frameTimes = [];
 		updateTimes = [];
@@ -146,9 +159,25 @@ class Telemetry
 		#end
 	}
 
+	/**
+		Seconds from a high-resolution monotonic clock.
+
+		Not `haxe.Timer.stamp()`: on Linux it resolves to whole milliseconds, which is useless
+		against an 8.33 ms budget - every sub-millisecond update and buffer swap rounds to zero,
+		and render times come out as integers with float noise (`3.00000000000011`). The
+		performance counter is the same clock lime measures `deltaTime` with, so the CPU columns
+		end up on the same footing as the frame column.
+
+		The counter is rebased at init: it counts from an arbitrary epoch, and on a machine with a
+		long uptime the raw value is large enough to start costing significant digits.
+	**/
 	private static inline function now():Float
 	{
+		#if (lime_cffi && !macro)
+		return (perfFrequency > 0) ? ((System.getPerformanceCounter() - perfOrigin) / perfFrequency) : haxe.Timer.stamp();
+		#else
 		return haxe.Timer.stamp();
+		#end
 	}
 
 	private static function sampleMemory():Float
@@ -282,8 +311,15 @@ class Telemetry
 	#if (lime_telemetry && !macro)
 	private static function commit(end:Float):Void
 	{
-		var frameMs = (nativeDelta >= 0) ? nativeDelta : ((lastFrameStart < 0) ? 0.0 : (frameStart - lastFrameStart) * 1000);
+		var measured = (lastFrameStart < 0) ? -1.0 : (frameStart - lastFrameStart) * 1000;
+		var frameMs = (nativeDelta >= 0 && nativeDelta <= MAX_PLAUSIBLE_FRAME_MS) ? nativeDelta : measured;
+
 		lastFrameStart = frameStart;
+
+		// Nothing usable for this sample: the native delta was out of range and there is no
+		// previous frame to measure against. Dropping it beats recording a 1.8e12 ms frame,
+		// which would otherwise dominate the average, the max and the chart's y-axis
+		if (frameMs < 0) return;
 
 		if (totalPushed % memoryInterval == 0) lastMemory = sampleMemory();
 
@@ -427,7 +463,12 @@ class Telemetry
 				if (!queryBusy[i]) continue;
 				if (GL.getQueryObjectui(queries[i], GL.QUERY_RESULT_AVAILABLE) == 0) continue;
 
-				var ns = GL.getQueryObjectui(queries[i], GL.QUERY_RESULT);
+				// The result is a 32-bit unsigned count of nanoseconds, but it comes back through
+				// a signed Int - so any frame the GPU spent longer than 2^31 ns (~2.1 s) on
+				// arrives negative. Re-wrap rather than reporting negative GPU time
+				var ns:Float = GL.getQueryObjectui(queries[i], GL.QUERY_RESULT);
+				if (ns < 0) ns += 4294967296.0;
+
 				var target = queryTarget[i];
 
 				if (target >= 0 && target < gpuTimes.length) gpuTimes[target] = ns / 1000000.0;

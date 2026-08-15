@@ -17,6 +17,11 @@ import sys
 
 PALETTE = ["#dbe9f6", "#fdebd0", "#e8dff5", "#dff0e4", "#fbe3e8", "#e6e6e6"]
 
+# Above this a row is not a frame. Captures taken before the recorder guarded against it carry
+# an absolute timestamp in frame_ms on the first row (~1.8e12 ms), which is enough on its own to
+# take the average, the max and both lows with it.
+MAX_PLAUSIBLE_FRAME_MS = 60000.0
+
 
 def load(path):
     meta, rows = {}, []
@@ -36,6 +41,23 @@ def load(path):
 
     if not rows:
         sys.exit("no samples in " + path)
+
+    def frame_of(r):
+        try:
+            return float(r.get("frame_ms"))
+        except (TypeError, ValueError):
+            return 0.0
+
+    kept = [r for r in rows if frame_of(r) <= MAX_PLAUSIBLE_FRAME_MS]
+    dropped = len(rows) - len(kept)
+
+    if dropped:
+        print("note: dropped %d row(s) with an implausible frame_ms (> %.0f ms)"
+              % (dropped, MAX_PLAUSIBLE_FRAME_MS))
+        rows = kept
+
+    if not rows:
+        sys.exit("no usable samples in " + path)
 
     def col(name, default=None):
         if name not in rows[0]:
@@ -99,8 +121,38 @@ def low(sorted_frames, frac):
     return 1000.0 / (sum(worst) / len(worst))
 
 
-def report(meta, d, budget):
-    f = d["frame"]
+def idle_mask(d, budget, stall_factor):
+    """Frames that ran long without the process being busy.
+
+    An unfocused window is throttled - 100 ms frames with 2 ms of CPU behind them - and those
+    frames are not a performance result. Counting them drags the average down and pins p95/p99
+    to the throttled rate, which is how a capture of a 120 fps game reports p99 = 100 ms.
+    """
+    busy = [max(c or 0.0, g or 0.0) for c, g in zip(d["cpu"], d["gpu"])]
+
+    # An older capture has no cpu_ms or gpu_ms column and loads them as zeros. Classifying by
+    # "not busy" there would mark every slow frame idle and drop the whole interesting half of
+    # the data, so with nothing to judge by, judge nothing.
+    if not any(busy):
+        return [False] * len(d["frame"])
+
+    return [fr > budget * stall_factor and b <= budget for fr, b in zip(d["frame"], busy)]
+
+
+def report(meta, d, budget, stall_factor=2.0):
+    idle = idle_mask(d, budget, stall_factor)
+    keep = [i for i, is_idle in enumerate(idle) if not is_idle]
+
+    # Every series is indexed through `keep`, so the frame stats, the per-phase averages and the
+    # section breakdown all describe the same set of frames. Slicing only the frame list would
+    # silently pair each frame with another frame's section.
+    if not keep:
+        keep = list(range(len(d["frame"])))
+
+    def sel(key):
+        return [d[key][i] for i in keep]
+
+    f = sel("frame")
     s = sorted(f)
     n = len(f)
     avg = sum(f) / n
@@ -108,11 +160,21 @@ def report(meta, d, budget):
     def pct(p):
         return s[min(n - 1, int(n * p / 100))]
 
+    def mean(vals):
+        vals = [v for v in vals if v is not None]
+        return (sum(vals) / len(vals)) if vals else None
+
     print("===== lime telemetry =====")
     for k in ("gpu", "gl", "platform"):
         if k in meta:
             print("%-13s: %s" % (k, meta[k]))
-    print("%-13s: %.1fs over %d frames" % ("duration", d["t"][-1] - d["t"][0], n))
+    print("%-13s: %.1fs wall clock" % ("duration", d["t"][-1] - d["t"][0]))
+    print("%-13s: %d" % ("frames", n))
+
+    skipped = len(d["frame"]) - n
+    if skipped:
+        print("%-13s: %d frames throttled while idle (excluded below)" % ("idle", skipped))
+
     print("%-13s: %.3f ms (%.2f fps)" % ("average", avg, 1000 / avg))
     print("%-13s: %.3f ms (%.2f fps)" % ("frame p50", pct(50), 1000 / pct(50)))
     print("%-13s: %.3f ms" % ("frame p95", pct(95)))
@@ -120,15 +182,15 @@ def report(meta, d, budget):
     print("%-13s: %.3f ms" % ("frame max", s[-1]))
     print("%-13s: %.2f fps" % ("1% low", low(s, 0.01)))
     print("%-13s: %.2f fps" % ("0.1% low", low(s, 0.001)))
-    print("%-13s: %.3f ms" % ("cpu avg", sum(d["cpu"]) / n))
+    print("%-13s: %.3f ms" % ("cpu avg", mean(sel("cpu")) or 0.0))
 
     for key, label in (("update", "update avg"), ("render", "render avg"), ("swap", "swap avg")):
-        vals = [v for v in d[key] if v is not None]
-        if vals:
-            print("%-13s: %.3f ms" % (label, sum(vals) / len(vals)))
+        m = mean(sel(key))
+        if m is not None:
+            print("%-13s: %.3f ms" % (label, m))
 
-    g = [v for v in d["gpu"] if v is not None]
-    print("%-13s: %s" % ("gpu avg", "%.3f ms" % (sum(g) / len(g)) if g else "n/a"))
+    g = mean(sel("gpu"))
+    print("%-13s: %s" % ("gpu avg", "%.3f ms" % g if g is not None else "n/a"))
 
     mem = [v for v in d["mem"] if v is not None]
     if mem:
@@ -137,11 +199,11 @@ def report(meta, d, budget):
     overs = sum(1 for v in f if v > budget * 1.5)
     print("%-13s: %d frames > %.2f ms (%.1f%%)" % ("over budget", overs, budget * 1.5, 100.0 * overs / n))
 
-    secs = [x for x in d["section"] if x]
-    if secs:
+    sections = sel("section")
+    if any(sections):
         print("--- sections ---")
         by = collections.OrderedDict()
-        for sec, fr in zip(d["section"], f):
+        for sec, fr in zip(sections, f):
             if sec:
                 by.setdefault(sec, []).append(fr)
         for name, fr in by.items():
@@ -169,7 +231,7 @@ def main():
     t, f = d["t"], d["frame"]
     budget = args.target if args.target > 0 else sorted(f)[len(f) // 2]
 
-    report(meta, d, budget)
+    report(meta, d, budget, args.stall_factor)
 
     has_mem = any(v is not None for v in d["mem"])
     rows = 3 if has_mem else 2
@@ -186,9 +248,20 @@ def main():
             axes[0].annotate(name, (start, 1.01), xycoords=("data", "axes fraction"),
                              fontsize=8, color="#555555")
 
-    for start, end, _ in spans(t, f, lambda v: v > budget * args.stall_factor):
+    # A long frame only counts as a stall if the process was actually busy for it. When the
+    # window is unfocused the frame rate is throttled - 100 ms frames with 2 ms of CPU behind
+    # them - and shading that red paints a minute of idling as the worst stall in the capture.
+    busy = [max(c or 0.0, g or 0.0) for c, g in zip(d["cpu"], d["gpu"])]
+    stall = [fr > budget * args.stall_factor and b > budget for fr, b in zip(f, busy)]
+    idle = [fr > budget * args.stall_factor and not s for fr, s in zip(f, stall)]
+
+    for start, end, _ in spans(t, stall, lambda v: v):
         for ax in axes:
             ax.axvspan(start, end, color="red", alpha=0.18, lw=0, zorder=1)
+
+    for start, end, _ in spans(t, idle, lambda v: v):
+        for ax in axes:
+            ax.axvspan(start, end, color="#b0b0b0", alpha=0.18, lw=0, zorder=1)
 
     ax = axes[0]
     ax.plot(t, f, lw=0.6, color="#999999", label="Frame (wall clock)", zorder=2)
@@ -215,6 +288,11 @@ def main():
     ax.set_ylabel("Time (ms)")
     ax.set_title("CPU breakdown")
     if plotted:
+        # Clamped like the panel above. Asset loading spends seconds inside a single render
+        # call, and letting that set the scale squashes every real frame onto the axis.
+        vals = [v for k in ("update", "render", "swap") for v in d[k] if v is not None]
+        if vals:
+            ax.set_ylim(0, min(max(vals) * 1.05, budget * 6) or 1)
         ax.legend(loc="upper left", fontsize=8)
     else:
         ax.text(0.5, 0.5, "no breakdown columns in this capture",
