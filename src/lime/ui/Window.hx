@@ -30,6 +30,15 @@ class Window
 {
 	public var application(default, null):Application;
 	public var borderless(get, set):Bool;
+
+	/**
+	 * A borderless window pinned to exactly cover its display's bounds, without using
+	 * the native fullscreen flag. Unlike `fullscreen`, this is not subject to the OS's
+	 * minimize-on-focus-loss behavior for fullscreen windows, so alt-tabbing away leaves
+	 * it in place. The window is also locked in position and size for as long as this is
+	 * enabled - if the OS or user moves/resizes it anyway, it snaps back.
+	**/
+	public var borderlessFullscreen(get, set):Bool;
 	public var context(default, null):RenderContext;
 	public var cursor(get, set):MouseCursor;
 	public var display(get, null):Display;
@@ -109,6 +118,10 @@ class Window
 	@:noCompletion private var __attributes:WindowAttributes;
 	@:noCompletion private var __backend:WindowBackend;
 	@:noCompletion private var __borderless:Bool;
+	@:noCompletion private var __borderlessFullscreen:Bool;
+	@:noCompletion private var __borderlessFullscreenBounds:Rectangle;
+	@:noCompletion private var __borderlessFullscreenPrevBorderless:Bool;
+	@:noCompletion private var __borderlessFullscreenPrevResizable:Bool;
 	@:noCompletion private var __fullscreen:Bool;
 	@:noCompletion private var __height:Int;
 	@:noCompletion private var __hidden:Bool;
@@ -134,6 +147,7 @@ class Window
 		untyped Object.defineProperties(p,
 			{
 				"borderless": {get: p.get_borderless, set: p.set_borderless},
+				"borderlessFullscreen": {get: p.get_borderlessFullscreen, set: p.set_borderlessFullscreen},
 				"cursor": {get: p.get_cursor, set: p.set_cursor},
 				"display": {get: p.get_display},
 				"displayMode": {get: p.get_displayMode, set: p.set_displayMode},
@@ -176,6 +190,7 @@ class Window
 		__title = Reflect.hasField(__attributes, "title") ? __attributes.title : "";
 		__visible = true;
 		__borderless = Reflect.hasField(__attributes, "borderless") ? __attributes.borderless : false;
+		__borderlessFullscreen = false;
 		__resizable = Reflect.hasField(__attributes, "resizable") ? __attributes.resizable : false;
 		__maximized = Reflect.hasField(__attributes, "maximized") ? __attributes.maximized : false;
 		__minimized = Reflect.hasField(__attributes, "minimized") ? __attributes.minimized : false;
@@ -518,6 +533,64 @@ class Window
 	@:noCompletion private function set_borderless(value:Bool):Bool
 	{
 		return __borderless = __backend.setBorderless(value);
+	}
+
+	@:noCompletion private inline function get_borderlessFullscreen():Bool
+	{
+		return __borderlessFullscreen;
+	}
+
+	@:noCompletion private function set_borderlessFullscreen(value:Bool):Bool
+	{
+		if (value == __borderlessFullscreen) return value;
+
+		__borderlessFullscreen = value;
+
+		if (value)
+		{
+			var bounds = display.bounds;
+			__borderlessFullscreenBounds = bounds;
+			__borderlessFullscreenPrevBorderless = borderless;
+			__borderlessFullscreenPrevResizable = resizable;
+
+			resizable = false;
+			borderless = true;
+
+			move(Std.int(bounds.x), Std.int(bounds.y));
+			resize(Std.int(bounds.width), Std.int(bounds.height));
+
+			onMove.add(__borderlessFullscreen_onMove);
+			onResize.add(__borderlessFullscreen_onResize);
+		}
+		else
+		{
+			onMove.remove(__borderlessFullscreen_onMove);
+			onResize.remove(__borderlessFullscreen_onResize);
+
+			borderless = __borderlessFullscreenPrevBorderless;
+			resizable = __borderlessFullscreenPrevResizable;
+			__borderlessFullscreenBounds = null;
+		}
+
+		return value;
+	}
+
+	@:noCompletion private function __borderlessFullscreen_onMove(x:Float, y:Float):Void
+	{
+		var bounds = __borderlessFullscreenBounds;
+		if (bounds != null && (x != bounds.x || y != bounds.y))
+		{
+			move(Std.int(bounds.x), Std.int(bounds.y));
+		}
+	}
+
+	@:noCompletion private function __borderlessFullscreen_onResize(width:Int, height:Int):Void
+	{
+		var bounds = __borderlessFullscreenBounds;
+		if (bounds != null && (width != bounds.width || height != bounds.height))
+		{
+			resize(Std.int(bounds.width), Std.int(bounds.height));
+		}
 	}
 
 	@:noCompletion private inline function get_frameRate():Float

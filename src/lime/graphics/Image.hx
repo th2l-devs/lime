@@ -1033,17 +1033,27 @@ class Image
 
 		return promise.future;
 		#else
-		var request = new HTTPRequest<Image>();
-		return request.load(path).then(function(image)
+		// load raw bytes (threaded), then decode via loadFromBytes (also threaded) -
+		// HTTPRequest<Image> used to decode inline on the byte-read callback's thread
+		var request = new HTTPRequest<Bytes>();
+		return request.load(path).then(function(bytes)
 		{
-			if (image != null)
+			if (bytes == null)
 			{
-				return Future.withValue(image);
+				return cast Future.withError("[Image] Could not load file \"" + path + "\"");
 			}
-			else
+
+			return loadFromBytes(bytes).then(function(image)
 			{
-				return cast Future.withError("");
-			}
+				if (image != null)
+				{
+					return Future.withValue(image);
+				}
+				else
+				{
+					return cast Future.withError("[Image] Could not decode file \"" + path + "\"");
+				}
+			});
 		});
 		#end
 	}

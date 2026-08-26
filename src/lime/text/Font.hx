@@ -147,22 +147,32 @@ class Font
 
 	public static function loadFromBytes(bytes:Bytes):Future<Font>
 	{
-		return Future.withValue(fromBytes(bytes));
+		return new Future<Font>(function() return fromBytes(bytes), true);
 	}
 
 	public static function loadFromFile(path:String):Future<Font>
 	{
-		var request = new HTTPRequest<Font>();
-		return request.load(path).then(function(font)
+		// load raw bytes (threaded), then decode via loadFromBytes (also threaded) -
+		// HTTPRequest<Font> used to decode inline on the byte-read callback's thread
+		var request = new HTTPRequest<Bytes>();
+		return request.load(path).then(function(bytes)
 		{
-			if (font != null)
+			if (bytes == null)
 			{
-				return Future.withValue(font);
+				return cast Future.withError("[Font] Could not load file \"" + path + "\"");
 			}
-			else
+
+			return loadFromBytes(bytes).then(function(font)
 			{
-				return cast Future.withError("");
-			}
+				if (font != null)
+				{
+					return Future.withValue(font);
+				}
+				else
+				{
+					return cast Future.withError("[Font] Could not decode file \"" + path + "\"");
+				}
+			});
 		});
 	}
 

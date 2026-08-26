@@ -98,6 +98,66 @@ class AudioManager
 		#end
 	}
 
+	/**
+		The name of the currently active output device, or `null` if audio isn't initialized.
+	**/
+	public static function getCurrentDevice():String
+	{
+		#if !lime_doc_gen
+		if (context != null && context.type == OPENAL)
+		{
+			var alc = context.openal;
+			var currentContext = alc.getCurrentContext();
+
+			if (currentContext != null)
+			{
+				var device = alc.getContextsDevice(currentContext);
+				return alc.getString(ALC.DEVICE_SPECIFIER, device);
+			}
+		}
+		#end
+		return null;
+	}
+
+	/**
+		Lists the available audio output devices, suitable for passing to `setDevice()`.
+	**/
+	public static function getDeviceList():Array<String>
+	{
+		#if !lime_doc_gen
+		if (context != null && context.type == OPENAL)
+		{
+			return context.openal.getDeviceList();
+		}
+		#end
+		return [];
+	}
+
+	/**
+		Switches audio output to a different device without interrupting playback,
+		using `ALC_SOFT_reopen_device` - the same mechanism `update()` already uses
+		to recover from a disconnected device. Requires OpenAL-Soft; does nothing
+		(and returns `false`) otherwise.
+		@param	deviceName	A name from `getDeviceList()`, or `null` for the system default.
+	**/
+	public static function setDevice(deviceName:String):Bool
+	{
+		#if !lime_doc_gen
+		if (context != null && context.type == OPENAL)
+		{
+			var alc = context.openal;
+			var currentContext = alc.getCurrentContext();
+
+			if (currentContext != null)
+			{
+				var device = alc.getContextsDevice(currentContext);
+				return alc.reopenDeviceSOFT(device, deviceName, null);
+			}
+		}
+		#end
+		return false;
+	}
+
 	public static function resume():Void
 	{
 		#if !lime_doc_gen

@@ -1718,6 +1718,8 @@ class NativeCFFI
 
 	@:cffi private static function lime_alc_get_string(device:CFFIPointer, param:Int):Dynamic;
 
+	@:cffi private static function lime_alc_get_device_list(param:Int):Array<String>;
+
 	@:cffi private static function lime_alc_make_context_current(context:CFFIPointer):Bool;
 
 	@:cffi private static function lime_alc_open_device(devicename:String):CFFIPointer;
@@ -1898,6 +1900,7 @@ class NativeCFFI
 	private static var lime_alc_get_integerv = new cpp.Callable<cpp.Object->Int->Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_alc_get_integerv",
 		"oiio", false));
 	private static var lime_alc_get_string = new cpp.Callable<cpp.Object->Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_alc_get_string", "oio", false));
+	private static var lime_alc_get_device_list = new cpp.Callable<Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_alc_get_device_list", "io", false));
 	private static var lime_alc_make_context_current = new cpp.Callable<cpp.Object->Bool>(cpp.Prime._loadPrime("lime", "lime_alc_make_context_current", "ob",
 		false));
 	private static var lime_alc_open_device = new cpp.Callable<String->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_alc_open_device", "so", false));
@@ -2030,6 +2033,7 @@ class NativeCFFI
 	private static var lime_alc_get_error = CFFI.load("lime", "lime_alc_get_error", 1);
 	private static var lime_alc_get_integerv = CFFI.load("lime", "lime_alc_get_integerv", 3);
 	private static var lime_alc_get_string = CFFI.load("lime", "lime_alc_get_string", 2);
+	private static var lime_alc_get_device_list = CFFI.load("lime", "lime_alc_get_device_list", 1);
 	private static var lime_alc_make_context_current = CFFI.load("lime", "lime_alc_make_context_current", 1);
 	private static var lime_alc_open_device = CFFI.load("lime", "lime_alc_open_device", 1);
 	private static var lime_alc_pause_device = CFFI.load("lime", "lime_alc_pause_device", 1);
@@ -2379,6 +2383,11 @@ class NativeCFFI
 	}
 
 	@:hlNative("lime", "hl_alc_get_string") private static function lime_alc_get_string(device:CFFIPointer, param:Int):hl.Bytes
+	{
+		return null;
+	}
+
+	@:hlNative("lime", "hl_alc_get_device_list") private static function lime_alc_get_device_list(param:Int):hl.NativeArray<hl.Bytes>
 	{
 		return null;
 	}
