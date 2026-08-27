@@ -1081,21 +1081,32 @@ namespace lime {
 
 	bool SDLWindow::SetFullscreen (bool fullscreen) {
 
+		int result;
+
 		if (fullscreen) {
 
 			if (displayModeSet) {
 
-				SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN);
+				result = SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN);
 
 			} else {
 
-				SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+				result = SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
 
 			}
 
 		} else {
 
-			SDL_SetWindowFullscreen (sdlWindow, 0);
+			result = SDL_SetWindowFullscreen (sdlWindow, 0);
+
+		}
+
+		if (result != 0) {
+
+			// report what the window actually ended up as, not what was requested -
+			// a failed call here previously still reported success to Haxe
+			printf ("Could not set fullscreen: %s.\n", SDL_GetError ());
+			return (SDL_GetWindowFlags (sdlWindow) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
 
 		}
 
