@@ -51,9 +51,11 @@ import lime.utils.Assets;
 
 		if (rootPath == null) {
 
-			#if (ios || tvos || webassembly)
+			#if (ios || tvos)
 			rootPath = "assets/";
 			#elseif android
+			rootPath = "";
+			#elseif (emscripten || webassembly)
 			rootPath = "";
 			#elseif (console || sys)
 			rootPath = lime.system.System.applicationDirectory;

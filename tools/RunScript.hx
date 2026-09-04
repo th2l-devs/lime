@@ -7,16 +7,8 @@ import sys.FileSystem;
 
 class RunScript
 {
-	private static function rebuildTools(rebuildBinaries = true):Void
+	private static function rebuildTools(limeDirectory:String, toolsDirectory:String, rebuildBinaries = true):Void
 	{
-		var limeDirectory = Haxelib.getPath(new Haxelib("lime"), true);
-		var toolsDirectory = Path.combine(limeDirectory, "tools");
-
-		if (!FileSystem.exists(toolsDirectory))
-		{
-			toolsDirectory = Path.combine(limeDirectory, "../tools");
-		}
-
 		/*var extendedToolsDirectory = Haxelib.getPath (new Haxelib ("lime-extended"), false);
 
 			if (extendedToolsDirectory != null && extendedToolsDirectory != "") {
@@ -35,7 +27,7 @@ class RunScript
 
 		if (!rebuildBinaries) return;
 
-		var platforms = ["Windows", "Mac", "Mac64", "MacArm64", "Linux", "Linux64"];
+		var platforms = ["Windows", "Mac", "Mac64", "MacArm64", "Linux", "Linux64", "LinuxArm", "LinuxArm64"];
 
 		for (platform in platforms)
 		{
@@ -70,14 +62,14 @@ class RunScript
 							System.runCommand(limeDirectory, "neko", args.concat(["mac", toolsDirectory]));
 						}
 
-					case "Linux":
-						if (System.hostPlatform == LINUX && System.hostArchitecture != X64)
+					case "Linux", "LinuxArm":
+						if (System.hostPlatform == LINUX && System.hostArchitecture != X64 && System.hostArchitecture != ARM64)
 						{
 							System.runCommand(limeDirectory, "neko", args.concat(["linux", "-32", toolsDirectory]));
 						}
 
-					case "Linux64":
-						if (System.hostPlatform == LINUX && System.hostArchitecture == X64)
+					case "Linux64", "LinuxArm64":
+						if (System.hostPlatform == LINUX && (System.hostArchitecture == X64 || System.hostArchitecture == ARM64))
 						{
 							System.runCommand(limeDirectory, "neko", args.concat(["linux", "-64", toolsDirectory]));
 						}
@@ -135,10 +127,9 @@ class RunScript
 	{
 		var args = Sys.args();
 
-		if (args.length > 2 && args[0] == "rebuild" && args[1] == "tools")
+		if (args.length > 0)
 		{
 			var lastArgument = new Path(args[args.length - 1]).toString();
-			var cacheDirectory = Sys.getCwd();
 
 			if (((StringTools.endsWith(lastArgument, "/") && lastArgument != "/") || StringTools.endsWith(lastArgument, "\\"))
 				&& !StringTools.endsWith(lastArgument, ":\\"))
@@ -148,10 +139,25 @@ class RunScript
 
 			if (FileSystem.exists(lastArgument) && FileSystem.isDirectory(lastArgument))
 			{
-				Sys.setCwd(lastArgument);
+				Haxelib.workingDirectory = lastArgument;
 			}
+		}
 
-			Haxelib.workingDirectory = Sys.getCwd();
+		var limeDirectory = Haxelib.getPath(new Haxelib("lime"), true);
+		var toolsDirectory = Path.combine(limeDirectory, "tools");
+
+		if (!FileSystem.exists(toolsDirectory))
+		{
+			limeDirectory = Path.combine(limeDirectory, "..");
+			toolsDirectory = Path.combine(limeDirectory, "tools");
+		}
+
+		if (args.length > 2 && args[0] == "rebuild" && args[1] == "tools")
+		{
+			var cacheDirectory = Sys.getCwd();
+			// used for Path.tryFullPath when setting overrides
+			Sys.setCwd(Haxelib.workingDirectory);
+
 			var rebuildBinaries = true;
 
 			for (arg in args)
@@ -187,7 +193,7 @@ class RunScript
 				}
 			}
 
-			rebuildTools(rebuildBinaries);
+			rebuildTools(limeDirectory, toolsDirectory, rebuildBinaries);
 
 			if (args.indexOf("-openfl") > -1)
 			{
@@ -207,21 +213,22 @@ class RunScript
 
 			var args = [
 				"-D", "lime",
-				"-cp", "tools",
-				"-cp", "tools/platforms",
-				"-cp", "src",
+				"-cp", toolsDirectory,
+				"-cp", Path.combine(toolsDirectory, "platforms"),
+				"-cp", Path.combine(limeDirectory, "src"),
 				"-lib", "format",
 				"-lib", "hxp",
 				"--run", "CommandLineTools"].concat(args);
 			Sys.exit(runCommand("", "haxe", args));
 		}
 
-		if (!FileSystem.exists("tools/tools.n") || args.indexOf("-rebuild") > -1)
+		var tools_n = Path.combine(toolsDirectory, "tools.n");
+		if (!FileSystem.exists(tools_n) || args.indexOf("-rebuild") > -1)
 		{
-			rebuildTools();
+			rebuildTools(limeDirectory, toolsDirectory);
 		}
 
-		var args = ["tools/tools.n"].concat(args);
+		var args = [tools_n].concat(args);
 		Sys.exit(runCommand("", "neko", args));
 	}
 }

@@ -53,6 +53,7 @@
 #include <locale>
 #include <codecvt>
 #endif
+#include <memory>
 
 #include <cstdlib>
 #include <cstring>
@@ -135,15 +136,82 @@ namespace lime {
 	}
 
 
+	std::string wstring_utf8 (const std::wstring& val) {
+
+		std::string out;
+		unsigned int codepoint = 0;
+
+		for (const wchar_t chr : val) {
+
+			if (chr >= 0xd800 && chr <= 0xdbff) {
+
+				codepoint = ((chr - 0xd800) << 10) + 0x10000;
+
+			} else {
+
+				if (chr >= 0xdc00 && chr <= 0xdfff) {
+
+					codepoint |= chr - 0xdc00;
+
+				} else {
+
+					codepoint = chr;
+
+				}
+
+				if (codepoint <= 0x7f) {
+
+					out.append (1, static_cast<char> (codepoint));
+
+				} else if (codepoint <= 0x7ff) {
+
+					out.append (1, static_cast<char> (0xc0 | ((codepoint >> 6) & 0x1f)));
+					out.append (1, static_cast<char> (0x80 | (codepoint & 0x3f)));
+
+				} else if (codepoint <= 0xffff) {
+
+					out.append (1, static_cast<char> (0xe0 | ((codepoint >> 12) & 0x0f)));
+					out.append (1, static_cast<char> (0x80 | ((codepoint >> 6) & 0x3f)));
+					out.append (1, static_cast<char> (0x80 | (codepoint & 0x3f)));
+
+				} else {
+
+					out.append (1, static_cast<char> (0xf0 | ((codepoint >> 18) & 0x07)));
+					out.append (1, static_cast<char> (0x80 | ((codepoint >> 12) & 0x3f)));
+					out.append (1, static_cast<char> (0x80 | ((codepoint >> 6) & 0x3f)));
+					out.append (1, static_cast<char> (0x80 | (codepoint & 0x3f)));
+
+				}
+
+				codepoint = 0;
+
+			}
+
+		}
+
+		return out;
+
+	}
+
+
+	vbyte* hl_wstring_to_utf8_bytes (const std::wstring& val) {
+
+		const std::string utf8 (wstring_utf8 (val));
+		vbyte* const bytes = hl_alloc_bytes (utf8.size () + 1);
+		std::memcpy(bytes, utf8.c_str (), utf8.size () + 1);
+		return bytes;
+
+	}
+
+
 	std::wstring* hxstring_to_wstring (HxString val) {
 
 		if (val.c_str ()) {
 
-			std::string _val = std::string (val.c_str ());
 			#ifdef HX_WINDOWS
-			std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-			return new std::wstring (converter.from_bytes (_val));
+			return new std::wstring (hxs_wchar (val, nullptr));
 			#else
+			const std::string _val (hxs_utf8 (val, nullptr));
 			return new std::wstring (_val.begin (), _val.end ());
 			#endif
 
@@ -186,34 +254,6 @@ namespace lime {
 			#else
 			std::string _val = std::string (val->begin (), val->end ());
 			return alloc_string (_val.c_str ());
-			#endif
-
-		} else {
-
-			return 0;
-
-		}
-
-	}
-
-
-	vbyte* wstring_to_vbytes (std::wstring* val) {
-
-		if (val) {
-
-			#ifdef HX_WINDOWS
-			int size = std::wcslen (val->c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::wcstombs (result, val->c_str (), size);
-			result[size] = '\0';
-			return (vbyte*)result;
-			#else
-			std::string _val = std::string (val->begin (), val->end ());
-			int size = std::strlen (_val.c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::strncpy (result, _val.c_str (), size);
-			result[size] = '\0';
-			return (vbyte*)result;
 			#endif
 
 		} else {
@@ -523,7 +563,7 @@ namespace lime {
 	value lime_bytes_read_file (HxString path, value bytes) {
 
 		Bytes data (bytes);
-		data.ReadFile (path.c_str ());
+		data.ReadFile (hxs_utf8 (path, nullptr));
 		return data.Value (bytes);
 
 	}
@@ -623,7 +663,7 @@ namespace lime {
 
 	void lime_clipboard_set_text (HxString text) {
 
-		Clipboard::SetText (text.c_str ());
+		Clipboard::SetText (hxs_utf8 (text, nullptr));
 
 	}
 
@@ -770,9 +810,9 @@ namespace lime {
 
 		if (path) {
 
-			vbyte* _path = wstring_to_vbytes (path);
+			vbyte* const result = hl_wstring_to_utf8_bytes (*path);
 			delete path;
-			return _path;
+			return result;
 
 		} else {
 
@@ -836,9 +876,9 @@ namespace lime {
 
 		if (path) {
 
-			vbyte* _path = wstring_to_vbytes (path);
+			vbyte* const result = hl_wstring_to_utf8_bytes (*path);
 			delete path;
-			return _path;
+			return result;
 
 		} else {
 
@@ -907,8 +947,7 @@ namespace lime {
 
 		for (int i = 0; i < files.size (); i++) {
 
-			vbyte* _file = wstring_to_vbytes (files[i]);
-			*resultData++ = _file;
+			*resultData++ = hl_wstring_to_utf8_bytes (*files[i]);
 			delete files[i];
 
 		}
@@ -971,9 +1010,9 @@ namespace lime {
 
 		if (path) {
 
-			vbyte* _path = wstring_to_vbytes (path);
+			vbyte* const result = hl_wstring_to_utf8_bytes (*path);
 			delete path;
-			return _path;
+			return result;
 
 		} else {
 
@@ -1144,12 +1183,11 @@ namespace lime {
 		#ifdef LIME_FREETYPE
 		Font *font = (Font*)fontHandle->ptr;
 		wchar_t *name = font->GetFamilyName ();
-		int size = std::wcslen (name);
-		char* result = (char*)malloc (size + 1);
-		std::wcstombs (result, name, size);
-		result[size] = '\0';
+		if (!name)
+			return nullptr;
+		vbyte* const result = hl_wstring_to_utf8_bytes (name);
 		delete name;
-		return (vbyte*)result;
+		return result;
 		#else
 		return 0;
 		#endif
@@ -1161,7 +1199,7 @@ namespace lime {
 
 		#ifdef LIME_FREETYPE
 		Font *font = (Font*)val_data (fontHandle);
-		return font->GetGlyphIndex ((char*)character.c_str ());
+		return font->GetGlyphIndex (hxs_utf8 (character, nullptr));
 		#else
 		return -1;
 		#endif
@@ -1185,7 +1223,7 @@ namespace lime {
 
 		#ifdef LIME_FREETYPE
 		Font *font = (Font*)val_data (fontHandle);
-		return (value)font->GetGlyphIndices (true, (char*)characters.c_str ());
+		return (value)font->GetGlyphIndices (true, hxs_utf8 (characters, nullptr));
 		#else
 		return alloc_null ();
 		#endif
@@ -1318,6 +1356,54 @@ namespace lime {
 		#ifdef LIME_FREETYPE
 		Font *font = (Font*)fontHandle->ptr;
 		return font->GetUnderlineThickness ();
+		#else
+		return 0;
+		#endif
+
+	}
+
+
+	int lime_font_get_strikethrough_position (value fontHandle) {
+
+		#ifdef LIME_FREETYPE
+		Font *font = (Font*)val_data (fontHandle);
+		return font->GetStrikethroughPosition ();
+		#else
+		return 0;
+		#endif
+
+	}
+
+
+	HL_PRIM int HL_NAME(hl_font_get_strikethrough_position) (HL_CFFIPointer* fontHandle) {
+
+		#ifdef LIME_FREETYPE
+		Font *font = (Font*)fontHandle->ptr;
+		return font->GetStrikethroughPosition ();
+		#else
+		return 0;
+		#endif
+
+	}
+
+
+	int lime_font_get_strikethrough_thickness (value fontHandle) {
+
+		#ifdef LIME_FREETYPE
+		Font *font = (Font*)val_data (fontHandle);
+		return font->GetStrikethroughThickness ();
+		#else
+		return 0;
+		#endif
+
+	}
+
+
+	HL_PRIM int HL_NAME(hl_font_get_strikethrough_thickness) (HL_CFFIPointer* fontHandle) {
+
+		#ifdef LIME_FREETYPE
+		Font *font = (Font*)fontHandle->ptr;
+		return font->GetStrikethroughThickness ();
 		#else
 		return 0;
 		#endif
@@ -1565,21 +1651,21 @@ namespace lime {
 	}
 
 
-	void lime_font_set_size (value fontHandle, int fontSize) {
+	void lime_font_set_size (value fontHandle, int fontSize, int dpi) {
 
 		#ifdef LIME_FREETYPE
 		Font *font = (Font*)val_data (fontHandle);
-		font->SetSize (fontSize);
+		font->SetSize (fontSize, dpi);
 		#endif
 
 	}
 
 
-	HL_PRIM void HL_NAME(hl_font_set_size) (HL_CFFIPointer* fontHandle, int fontSize) {
+	HL_PRIM void HL_NAME(hl_font_set_size) (HL_CFFIPointer* fontHandle, int fontSize, int dpi) {
 
 		#ifdef LIME_FREETYPE
 		Font *font = (Font*)fontHandle->ptr;
-		font->SetSize (fontSize);
+		font->SetSize (fontSize, dpi);
 		#endif
 
 	}
@@ -2029,7 +2115,17 @@ namespace lime {
 
 		} else {
 
-			ImageDataUtil::CopyPixels (image, sourceImage, sourceRect, destPoint, alphaImage, alphaPoint, mergeAlpha);
+			if (!alphaPoint) {
+
+				Vector2 _alphaPoint = Vector2 (0, 0);
+
+				ImageDataUtil::CopyPixels (image, sourceImage, sourceRect, destPoint, alphaImage, &_alphaPoint, mergeAlpha);
+
+			} else {
+
+				ImageDataUtil::CopyPixels (image, sourceImage, sourceRect, destPoint, alphaImage, alphaPoint, mergeAlpha);
+
+			}
 
 		}
 
@@ -2322,20 +2418,6 @@ namespace lime {
 	}
 
 
-	int lime_joystick_get_num_trackballs (int id) {
-
-		return Joystick::GetNumTrackballs (id);
-
-	}
-
-
-	HL_PRIM int HL_NAME(hl_joystick_get_num_trackballs) (int id) {
-
-		return Joystick::GetNumTrackballs (id);
-
-	}
-
-
 	value lime_jpeg_decode_bytes (value data, bool decodeData, value buffer) {
 
 		ImageBuffer imageBuffer (buffer);
@@ -2376,7 +2458,7 @@ namespace lime {
 	value lime_jpeg_decode_file (HxString path, bool decodeData, value buffer) {
 
 		ImageBuffer imageBuffer (buffer);
-		Resource resource = Resource (path.c_str ());
+		Resource resource = Resource (hxs_utf8 (path, nullptr));
 
 		#ifdef LIME_JPEG
 		if (JPEG::Decode (&resource, &imageBuffer, decodeData)) {
@@ -2408,28 +2490,28 @@ namespace lime {
 	}
 
 
-	float lime_key_code_from_scan_code (float scanCode) {
+	int lime_key_code_from_scan_code (int scanCode) {
 
 		return KeyCode::FromScanCode (scanCode);
 
 	}
 
 
-	HL_PRIM float HL_NAME(hl_key_code_from_scan_code) (float scanCode) {
+	HL_PRIM int HL_NAME(hl_key_code_from_scan_code) (int scanCode) {
 
 		return KeyCode::FromScanCode (scanCode);
 
 	}
 
 
-	float lime_key_code_to_scan_code (float keyCode) {
+	int lime_key_code_to_scan_code (int keyCode) {
 
 		return KeyCode::ToScanCode (keyCode);
 
 	}
 
 
-	HL_PRIM float HL_NAME(hl_key_code_to_scan_code) (float keyCode) {
+	HL_PRIM int HL_NAME(hl_key_code_to_scan_code) (int keyCode) {
 
 		return KeyCode::ToScanCode (keyCode);
 
@@ -2631,7 +2713,7 @@ namespace lime {
 	value lime_png_decode_file (HxString path, bool decodeData, value buffer) {
 
 		ImageBuffer imageBuffer (buffer);
-		Resource resource = Resource (path.c_str ());
+		Resource resource = Resource (hxs_utf8 (path, nullptr));
 
 		#ifdef LIME_PNG
 		if (PNG::Decode (&resource, &imageBuffer, decodeData)) {
@@ -2736,13 +2818,9 @@ namespace lime {
 
 		if (model) {
 
-			int size = std::wcslen (model->c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::wcstombs (result, model->c_str (), size);
-			result[size] = '\0';
+			vbyte* const result = hl_wstring_to_utf8_bytes (*model);
 			delete model;
-
-			return (vbyte*)result;
+			return result;
 
 		}
 
@@ -2780,13 +2858,9 @@ namespace lime {
 
 		if (vendor) {
 
-			int size = std::wcslen (vendor->c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::wcstombs (result, vendor->c_str (), size);
-			result[size] = '\0';
+			vbyte* const result = hl_wstring_to_utf8_bytes (*vendor);
 			delete vendor;
-
-			return (vbyte*)result;
+			return result;
 
 		}
 
@@ -2799,7 +2873,7 @@ namespace lime {
 
 	value lime_system_get_directory (int type, HxString company, HxString title) {
 
-		std::wstring* path = System::GetDirectory ((SystemDirectory)type, company.c_str (), title.c_str ());
+		std::wstring* path = System::GetDirectory ((SystemDirectory)type, hxs_utf8 (company, nullptr), hxs_utf8 (title, nullptr));
 
 		if (path) {
 
@@ -2824,13 +2898,9 @@ namespace lime {
 
 		if (path) {
 
-			int size = std::wcslen (path->c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::wcstombs (result, path->c_str (), size);
-			result[size] = '\0';
+			vbyte* const result = hl_wstring_to_utf8_bytes (*path);
 			delete path;
-
-			return (vbyte*)result;
+			return result;
 
 		}
 
@@ -2932,13 +3002,9 @@ namespace lime {
 
 		if (label) {
 
-			int size = std::wcslen (label->c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::wcstombs (result, label->c_str (), size);
-			result[size] = '\0';
+			vbyte* const result = hl_wstring_to_utf8_bytes (*label);
 			delete label;
-
-			return (vbyte*)result;
+			return result;
 
 		}
 
@@ -2976,13 +3042,9 @@ namespace lime {
 
 		if (name) {
 
-			int size = std::wcslen (name->c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::wcstombs (result, name->c_str (), size);
-			result[size] = '\0';
+			vbyte* const result = hl_wstring_to_utf8_bytes (*name);
 			delete name;
-
-			return (vbyte*)result;
+			return result;
 
 		}
 
@@ -3020,14 +3082,9 @@ namespace lime {
 
 		if (version) {
 
-			int size = std::wcslen (version->c_str ());
-			char* result = (char*)malloc (size + 1);
-			std::wcstombs (result, version->c_str (), size);
-			result[size] = '\0';
+			vbyte* const result = hl_wstring_to_utf8_bytes (*version);
 			delete version;
-
-			return (vbyte*)result;
-
+			return result;
 		}
 
 		#endif
@@ -3217,7 +3274,7 @@ namespace lime {
 	void lime_window_alert (value window, HxString message, HxString title) {
 
 		Window* targetWindow = (Window*)val_data (window);
-		targetWindow->Alert (message.c_str (), title.c_str ());
+		targetWindow->Alert (hxs_utf8 (message, nullptr), hxs_utf8 (title, nullptr));
 
 	}
 
@@ -3225,8 +3282,8 @@ namespace lime {
 	HL_PRIM void HL_NAME(hl_window_alert) (HL_CFFIPointer* window, hl_vstring* message, hl_vstring* title) {
 
 		Window* targetWindow = (Window*)window->ptr;
-		const char *cmessage = message ? hl_to_utf8(message->bytes) : NULL;
-		const char *ctitle = title ? hl_to_utf8(title->bytes) : NULL;
+		const char *cmessage = message ? hl_to_utf8(message->bytes) : nullptr;
+		const char *ctitle = title ? hl_to_utf8(title->bytes) : nullptr;
 		targetWindow->Alert (cmessage, ctitle);
 
 	}
@@ -3306,7 +3363,7 @@ namespace lime {
 
 	value lime_window_create (value application, int width, int height, int flags, HxString title) {
 
-		Window* window = CreateWindow ((Application*)val_data (application), width, height, flags, title.c_str ());
+		Window* window = CreateWindow ((Application*)val_data (application), width, height, flags, hxs_utf8 (title, nullptr));
 		return CFFIPointer (window, gc_window);
 
 	}
@@ -3871,13 +3928,14 @@ namespace lime {
 	value lime_window_set_title (value window, HxString title) {
 
 		Window* targetWindow = (Window*)val_data (window);
-		const char* result = targetWindow->SetTitle (title.c_str ());
+		const char* titleUtf8 = hxs_utf8 (title, nullptr);
+		const char* result = targetWindow->SetTitle (titleUtf8);
 
 		if (result) {
 
 			value _result = alloc_string (result);
 
-			if (result != title.c_str ()) {
+			if (result != titleUtf8) {
 
 				free ((char*) result);
 
@@ -4056,6 +4114,8 @@ namespace lime {
 	DEFINE_PRIME1 (lime_font_get_num_glyphs);
 	DEFINE_PRIME1 (lime_font_get_underline_position);
 	DEFINE_PRIME1 (lime_font_get_underline_thickness);
+	DEFINE_PRIME1 (lime_font_get_strikethrough_position);
+	DEFINE_PRIME1 (lime_font_get_strikethrough_thickness);
 	DEFINE_PRIME1 (lime_font_get_units_per_em);
 	DEFINE_PRIME1 (lime_font_load);
 	DEFINE_PRIME1 (lime_font_load_bytes);
@@ -4063,7 +4123,7 @@ namespace lime {
 	DEFINE_PRIME2 (lime_font_outline_decompose);
 	DEFINE_PRIME3 (lime_font_render_glyph);
 	DEFINE_PRIME3 (lime_font_render_glyphs);
-	DEFINE_PRIME2v (lime_font_set_size);
+	DEFINE_PRIME3v (lime_font_set_size);
 	DEFINE_PRIME1v (lime_gamepad_add_mappings);
 	DEFINE_PRIME2v (lime_gamepad_event_manager_register);
 	DEFINE_PRIME1 (lime_gamepad_get_device_guid);
@@ -4096,7 +4156,6 @@ namespace lime {
 	DEFINE_PRIME1 (lime_joystick_get_num_axes);
 	DEFINE_PRIME1 (lime_joystick_get_num_buttons);
 	DEFINE_PRIME1 (lime_joystick_get_num_hats);
-	DEFINE_PRIME1 (lime_joystick_get_num_trackballs);
 	DEFINE_PRIME3 (lime_jpeg_decode_bytes);
 	DEFINE_PRIME3 (lime_jpeg_decode_file);
 	DEFINE_PRIME1 (lime_key_code_from_scan_code);
@@ -4253,6 +4312,8 @@ namespace lime {
 	DEFINE_HL_PRIM (_I32, hl_font_get_num_glyphs, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_I32, hl_font_get_underline_position, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_I32, hl_font_get_underline_thickness, _TCFFIPOINTER);
+	DEFINE_HL_PRIM (_I32, hl_font_get_strikethrough_position, _TCFFIPOINTER);
+	DEFINE_HL_PRIM (_I32, hl_font_get_strikethrough_thickness, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_I32, hl_font_get_units_per_em, _TCFFIPOINTER);
 	// DEFINE_PRIME1 (lime_font_load);
 	DEFINE_HL_PRIM (_TCFFIPOINTER, hl_font_load_bytes, _TBYTES);
@@ -4260,12 +4321,12 @@ namespace lime {
 	DEFINE_HL_PRIM (_DYN, hl_font_outline_decompose, _TCFFIPOINTER _I32);
 	DEFINE_HL_PRIM (_TBYTES, hl_font_render_glyph, _TCFFIPOINTER _I32 _TBYTES);
 	DEFINE_HL_PRIM (_TBYTES, hl_font_render_glyphs, _TCFFIPOINTER _ARR _TBYTES);
-	DEFINE_HL_PRIM (_VOID, hl_font_set_size, _TCFFIPOINTER _I32);
+	DEFINE_HL_PRIM (_VOID, hl_font_set_size, _TCFFIPOINTER _I32 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gamepad_add_mappings, _ARR);
 	DEFINE_HL_PRIM (_VOID, hl_gamepad_event_manager_register, _FUN(_VOID, _NO_ARG) _TGAMEPAD_EVENT);
 	DEFINE_HL_PRIM (_BYTES, hl_gamepad_get_device_guid, _I32);
 	DEFINE_HL_PRIM (_BYTES, hl_gamepad_get_device_name, _I32);
-	DEFINE_HL_PRIM (_VOID, hl_gamepad_rumble, _I32 _I32 _F64 _F64);
+	DEFINE_HL_PRIM (_VOID, hl_gamepad_rumble, _I32 _F64 _F64 _I32);
 	DEFINE_HL_PRIM (_TBYTES, hl_gzip_compress, _TBYTES _TBYTES);
 	DEFINE_HL_PRIM (_TBYTES, hl_gzip_decompress, _TBYTES _TBYTES);
 	DEFINE_HL_PRIM (_VOID, hl_haptic_vibrate, _I32 _I32);
@@ -4293,11 +4354,10 @@ namespace lime {
 	DEFINE_HL_PRIM (_I32, hl_joystick_get_num_axes, _I32);
 	DEFINE_HL_PRIM (_I32, hl_joystick_get_num_buttons, _I32);
 	DEFINE_HL_PRIM (_I32, hl_joystick_get_num_hats, _I32);
-	DEFINE_HL_PRIM (_I32, hl_joystick_get_num_trackballs, _I32);
 	DEFINE_HL_PRIM (_TIMAGEBUFFER, hl_jpeg_decode_bytes, _TBYTES _BOOL _TIMAGEBUFFER);
 	DEFINE_HL_PRIM (_TIMAGEBUFFER, hl_jpeg_decode_file, _STRING _BOOL _TIMAGEBUFFER);
-	DEFINE_HL_PRIM (_F32, hl_key_code_from_scan_code, _F32);
-	DEFINE_HL_PRIM (_F32, hl_key_code_to_scan_code, _F32);
+	DEFINE_HL_PRIM (_I32, hl_key_code_from_scan_code, _I32);
+	DEFINE_HL_PRIM (_I32, hl_key_code_to_scan_code, _I32);
 	DEFINE_HL_PRIM (_VOID, hl_key_event_manager_register, _FUN (_VOID, _NO_ARG) _TKEY_EVENT);
 	DEFINE_HL_PRIM (_BYTES, hl_locale_get_system_locale, _NO_ARG);
 	DEFINE_HL_PRIM (_TBYTES, hl_lzma_compress, _TBYTES _TBYTES);

@@ -1,4 +1,4 @@
-package;
+﻿package;
 
 import haxe.Json;
 import hxp.ArrayTools;
@@ -182,6 +182,11 @@ class IOSPlatform extends PlatformTarget
 			project.haxeflags.push("--json " + targetDirectory + "/types.json");
 		}
 
+		if (project.targetFlags.exists("json"))
+		{
+			project.haxeflags.push("--json " + targetDirectory + "/types.json");
+		}
+
 		if (project.targetFlags.exists("final"))
 		{
 			project.haxedefs.set("final", "");
@@ -289,7 +294,7 @@ class IOSPlatform extends PlatformTarget
 
 		context.VALID_ARCHS = valid_archs.join(" ");
 
-		var requiredCapabilities = [];
+		var requiredCapabilities:Array<{name:String, value:Bool}> = [];
 
 		if (armv7)
 		{
@@ -327,25 +332,10 @@ class IOSPlatform extends PlatformTarget
 		context.IOS_COMPILER = project.config.getString("ios.compiler", "clang");
 		context.CPP_BUILD_LIBRARY = project.config.getString("cpp.buildLibrary", "hxcpp");
 
-		var json = Json.parse(File.getContent(Haxelib.getPath(new Haxelib("hxcpp"), true) + "/haxelib.json"));
-
-		var version = Std.string(json.version);
-		var versionSplit = version.split(".");
-
-		while (versionSplit.length > 2)
-			versionSplit.pop();
-
-		if (Std.parseFloat(versionSplit.join(".")) > 3.1)
-		{
-			context.CPP_LIBPREFIX = "lib";
-		}
-		else
-		{
-			context.CPP_LIBPREFIX = "";
-		}
+		context.CPP_CACHE_WORKAROUND = "unset HXCPP_COMPILE_CACHE;";
 
 		context.IOS_LINKER_FLAGS = ["-stdlib=libc++"].concat(project.config.getArrayString("ios.linker-flags"));
-		context.IOS_NON_EXEMPT_ENCRYPTION = project.config.getBool("ios.non-exempt-encryption", true);
+		context.IOS_NON_EXEMPT_ENCRYPTION = project.config.getBool("ios.non-exempt-encryption", false);
 
 		switch (project.window.orientation)
 		{
@@ -373,9 +363,9 @@ class IOSPlatform extends PlatformTarget
 
 		for (dependency in project.dependencies)
 		{
-			var name = null;
-			var path = null;
-			var fileType = null;
+			var name:String = null;
+			var path:String = null;
+			var fileType:String = null;
 
 			if (Path.extension(dependency.name) == "framework")
 			{
@@ -442,7 +432,7 @@ class IOSPlatform extends PlatformTarget
 
 		if (allowInsecureHTTP != "*" && allowInsecureHTTP != "true")
 		{
-			var sites = [];
+			var sites:Array<{domain: String}> = [];
 
 			if (allowInsecureHTTP != "false")
 			{
@@ -510,7 +500,7 @@ class IOSPlatform extends PlatformTarget
 
 		var arc = (project.targetFlags.exists("arc"));
 
-		var commands = [];
+		var commands:Array<Array<String>> = [];
 
 		if (armv7) commands.push(["-Dios", "-DHXCPP_ARMV7"]);
 		if (armv7s) commands.push(["-Dios", "-DHXCPP_ARMV7S"]);
@@ -628,7 +618,7 @@ class IOSPlatform extends PlatformTarget
 			var sb = project.launchStoryboard;
 
 			var assetsPath = sb.assetsPath;
-			var imagesets = [];
+			var imagesets:Array<ImageSet> = [];
 
 			for (asset in sb.assets)
 			{
@@ -644,7 +634,7 @@ class IOSPlatform extends PlatformTarget
 						var baseImageName = Path.withoutExtension(imageset.name);
 
 						var imageScales = ["1x", "2x", "3x"];
-						var images = [];
+						var images:Array<{idiom:String, filename:String, scale:String}> = [];
 						for (scale in imageScales)
 						{
 							var filename = baseImageName + (scale == "1x" ? "" : "@" + scale) + ".png";
@@ -831,6 +821,8 @@ class IOSPlatform extends PlatformTarget
 
 			if (arch == "arm64-sim" && !arm64Sim) continue;
 
+			if (arch == "i386" && !context.I386) continue;
+
 			var libExt = [
 				".iphoneos-v7.a",
 				".iphoneos-v7s.a",
@@ -885,7 +877,7 @@ class IOSPlatform extends PlatformTarget
 						fileName = "lib" + fileName;
 					}
 
-					System.copyIfNewer(dependency.path, projectDirectory + "/lib/" + arch + "/" + fileName);
+					copyIfNewer(dependency.path, projectDirectory + "/lib/" + arch + "/" + fileName);
 				}
 			}
 		}
