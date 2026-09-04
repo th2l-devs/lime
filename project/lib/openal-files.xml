@@ -184,6 +184,8 @@
             <compilerflag value="-Dstrncasecmp=_strnicmp" />
             <compilerflag value="/permissive-" unless="mingw" />
             <compilerflag value="/utf-8" unless="mingw" />
+            <compilerflag value="/std:c++17" unless="mingw" />
+            <compilerflag value="-std=c++17" if="mingw" />
 
         </section>
 
@@ -197,6 +199,7 @@
             <compilerflag value="-fPIC" />
             <compilerflag value="-fvisibility=hidden" />
             <compilerflag value="-pthread" />
+            <compilerflag value="-std=c++17" />
 
         </section>
 
