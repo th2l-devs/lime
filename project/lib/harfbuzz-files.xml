@@ -11,7 +11,8 @@
 		<compilerflag value="-DHAVE_CAIRO" if="NATIVE_TOOLKIT_HAVE_CAIRO" />
 		<compilerflag value="-DHAVE_CAIRO_FT" if="NATIVE_TOOLKIT_HAVE_CAIRO" />
 		<compilerflag value="-DHAVE_UCDN" />
-		<compilerflag value="-DHB_NO_MT" /> <!-- TODO: Enable MT -->
+		<!-- HB_NO_MT removed: fonts now load on background threads, which first-touches
+		     HarfBuzz's lazily-initialized internals concurrently - unsafe without atomics. -->
 
 		<compilerflag value="-DHAVE_UNISCRIBE" if="windows" />
 		<compilerflag value="-DHAVE_DIRECTWRITE" if="windows HXCPP_M64" /> <!-- Windows 7+ -->
