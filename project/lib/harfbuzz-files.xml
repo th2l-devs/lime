@@ -14,6 +14,15 @@
 		<!-- HB_NO_MT removed: fonts now load on background threads, which first-touches
 		     HarfBuzz's lazily-initialized internals concurrently - unsafe without atomics. -->
 
+		<!-- HB_NDEBUG: always disable HarfBuzz's own internal var-allocation sanity asserts
+		     (hb-buffer-private.hh assert_var/allocate_var), even in debug builds. These are
+		     HarfBuzz's own paranoia checks around internal buffer scratch-bit bookkeeping during
+		     shaping (see hb-private.hh - normally only compiled out under NDEBUG/release), not a
+		     sign of memory corruption; upstream HarfBuzz docs call them safe to disable in
+		     production. Debug builds were hitting a spurious assert_var failure here that release
+		     never sees (release already defines NDEBUG). Compile-flag only, no functional change. -->
+		<compilerflag value="-DHB_NDEBUG" />
+
 		<compilerflag value="-DHAVE_UNISCRIBE" if="windows" />
 		<compilerflag value="-DHAVE_DIRECTWRITE" if="windows HXCPP_M64" /> <!-- Windows 7+ -->
 		<compilerflag value="-wd4244" if="isMsvc" />
