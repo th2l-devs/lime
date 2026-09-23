@@ -488,10 +488,8 @@ class NativeApplication
 				case RENDER_CONTEXT_RESTORED:
 					if (window.__backend.useHardware)
 					{
-						// GL.context = new OpenGLRenderContext ();
-						// window.context.gl = GL.context;
-
-						window.onRenderContextRestored.dispatch(window.context);
+						if (window.context == null) window.__backend.restoreContext();
+						if (window.context != null) window.onRenderContextRestored.dispatch(window.context);
 					}
 			}
 		}

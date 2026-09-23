@@ -48,6 +48,7 @@ class NativeWindow
 	private var mouseLock:Bool;
 	private var parent:Window;
 	private var useHardware:Bool;
+	private var renderAttributes:lime.graphics.RenderContextAttributes;
 	#if lime_cairo
 	private var cacheLock:Dynamic;
 	private var cairo:Cairo;
@@ -134,28 +135,7 @@ class NativeWindow
 				useHardware = true;
 				contextAttributes.hardware = true;
 
-				#if lime_opengl
-				context.gl = gl;
-				#end
-
-				context.gles2 = gl;
-				context.webgl = gl;
-				context.type = gl.type;
-				context.version = Std.string(gl.version);
-
-				// GLES 3 and desktop GL 3.3 both cover the WebGL2 feature set - instanced arrays,
-				// fence sync, mapBufferRange, texture storage - and on desktop they resolve
-				// through the same dynamic extension loader either way. Without the desktop half
-				// of this test, `webgl2` is null on every native GL build, so anything gated on
-				// it reports unsupported no matter what the driver actually offers.
-				//
-				// macOS falls out of this naturally: its compatibility profile caps at 2.1, and
-				// the core profiles above that are unusable by the renderer.
-				if ((gl.type == OPENGLES && gl.version >= 3) || (gl.type == OPENGL && gl.version >= 3.3))
-				{
-					context.gles3 = gl;
-					context.webgl2 = gl;
-				}
+				fillGLContext(context, gl);
 
 				if (GL.context == null)
 				{
@@ -179,6 +159,7 @@ class NativeWindow
 
 		contextAttributes.type = context.type;
 		context.attributes = contextAttributes;
+		renderAttributes = contextAttributes;
 		parent.context = context;
 
 		setFrameRate(Reflect.hasField(attributes, "frameRate") ? attributes.frameRate : 60);
@@ -190,6 +171,54 @@ class NativeWindow
 		// See, for example: openfl/openfl#2697
 		// it appears that SDL 3 may behave differently, if we ever upgrade.
 		setTextInputEnabled(false);
+	}
+
+	private function fillGLContext(context:RenderContext, gl:NativeOpenGLRenderContext):Void
+	{
+		#if (!macro && lime_cffi)
+		#if lime_opengl
+		context.gl = gl;
+		#end
+
+		context.gles2 = gl;
+		context.webgl = gl;
+		context.type = gl.type;
+		context.version = Std.string(gl.version);
+
+		// GLES 3 and desktop GL 3.3 both cover the WebGL2 feature set - instanced arrays,
+		// fence sync, mapBufferRange, texture storage - and on desktop they resolve
+		// through the same dynamic extension loader either way. Without the desktop half
+		// of this test, `webgl2` is null on every native GL build, so anything gated on
+		// it reports unsupported no matter what the driver actually offers.
+		//
+		// macOS falls out of this naturally: its compatibility profile caps at 2.1, and
+		// the core profiles above that are unusable by the renderer.
+		if ((gl.type == OPENGLES && gl.version >= 3) || (gl.type == OPENGL && gl.version >= 3.3))
+		{
+			context.gles3 = gl;
+			context.webgl2 = gl;
+		}
+		#end
+	}
+
+	private function restoreContext():Void
+	{
+		#if (!macro && lime_cffi && (lime_opengl || lime_opengles))
+		if (handle == null || !useHardware || parent.context != null) return;
+
+		var gl = new NativeOpenGLRenderContext();
+		var context = new RenderContext();
+		context.window = parent;
+		fillGLContext(context, gl);
+		if (renderAttributes != null)
+		{
+			renderAttributes.type = context.type;
+			context.attributes = renderAttributes;
+		}
+
+		GL.context = gl;
+		parent.context = context;
+		#end
 	}
 
 	public function alert(message:String, title:String):Void
