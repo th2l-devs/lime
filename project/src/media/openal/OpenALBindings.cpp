@@ -19,6 +19,12 @@
 #include <list>
 #include <map>
 #include <system/ValuePointer.h>
+#include <utils/Resource.h>
+#include <media/AudioBuffer.h>
+#include <media/containers/OGG.h>
+#include <media/containers/WAV.h>
+#include <string>
+#include <math.h>
 
 
 namespace lime {
@@ -1212,6 +1218,122 @@ namespace lime {
 			return 0;
 
 		}
+
+	}
+
+
+	value lime_audio_load_al_native (value path, value envelopeRate) {
+
+		std::string file (val_string (path));
+		int rate = val_int (envelopeRate);
+
+		AudioBuffer audioBuffer = AudioBuffer (alloc_null ());
+		audioBuffer.data = new ArrayBufferView (alloc_null ());
+		Resource resource = Resource (file.c_str ());
+
+		bool decoded = WAV::Decode (&resource, &audioBuffer);
+
+		#ifdef LIME_OGG
+		if (!decoded) decoded = OGG::Decode (&resource, &audioBuffer);
+		#endif
+
+		unsigned char* pcm = audioBuffer.data->buffer->b;
+		int size = audioBuffer.data->buffer->length;
+		audioBuffer.data->buffer->b = 0;
+		audioBuffer.data->buffer->length = 0;
+
+		int channels = audioBuffer.channels;
+		int bits = audioBuffer.bitsPerSample;
+		int sampleRate = audioBuffer.sampleRate;
+
+		if (!decoded || !pcm || size <= 0 || channels < 1 || channels > 2 || (bits != 8 && bits != 16) || sampleRate <= 0) {
+
+			if (pcm) free (pcm);
+			return alloc_null ();
+
+		}
+
+		ALenum format;
+		if (channels == 1) format = (bits == 8) ? AL_FORMAT_MONO8 : AL_FORMAT_MONO16;
+		else format = (bits == 8) ? AL_FORMAT_STEREO8 : AL_FORMAT_STEREO16;
+
+		int bytesPerSample = bits >> 3;
+		int frameSize = bytesPerSample * channels;
+		int frames = size / frameSize;
+		int block = (rate > 0) ? sampleRate / rate : sampleRate;
+		if (block < 1) block = 1;
+		int blocks = (frames + block - 1) / block;
+
+		buffer envelope = alloc_buffer_len (blocks * 4);
+		unsigned char* env = (unsigned char*)buffer_data (envelope);
+
+		for (int bi = 0; bi < blocks; bi++) {
+
+			int start = bi * block;
+			int end = start + block;
+			if (end > frames) end = frames;
+			double leftSum = 0;
+			double rightSum = 0;
+
+			for (int f = start; f < end; f++) {
+
+				const unsigned char* at = pcm + (size_t)f * frameSize;
+				double l;
+				double r;
+
+				if (bits == 16) {
+
+					l = (short)(at[0] | (at[1] << 8)) / 32768.0;
+					r = (channels > 1) ? (short)(at[2] | (at[3] << 8)) / 32768.0 : l;
+
+				} else {
+
+					l = ((int)at[0] - 128) / 128.0;
+					r = (channels > 1) ? ((int)at[1] - 128) / 128.0 : l;
+
+				}
+
+				leftSum += l * l;
+				rightSum += r * r;
+
+			}
+
+			int count = end - start;
+			double left = count > 0 ? sqrt (leftSum / count) : 0;
+			double right = count > 0 ? sqrt (rightSum / count) : 0;
+			unsigned int lv = (unsigned int)(left * 65535.0 + 0.5);
+			unsigned int rv = (unsigned int)(right * 65535.0 + 0.5);
+			if (lv > 65535) lv = 65535;
+			if (rv > 65535) rv = 65535;
+			env[bi * 4] = (unsigned char)(lv & 0xFF);
+			env[bi * 4 + 1] = (unsigned char)(lv >> 8);
+			env[bi * 4 + 2] = (unsigned char)(rv & 0xFF);
+			env[bi * 4 + 3] = (unsigned char)(rv >> 8);
+
+		}
+
+		value alBuffer = lime_al_gen_buffer ();
+
+		if (val_is_null (alBuffer)) {
+
+			free (pcm);
+			return alloc_null ();
+
+		}
+
+		ALuint id = (ALuint)(uintptr_t)val_data (alBuffer);
+		alBufferData (id, format, pcm, size, sampleRate);
+		free (pcm);
+
+		value result = alloc_empty_object ();
+		alloc_field (result, val_id ("buffer"), alBuffer);
+		alloc_field (result, val_id ("channels"), alloc_int (channels));
+		alloc_field (result, val_id ("bitsPerSample"), alloc_int (bits));
+		alloc_field (result, val_id ("sampleRate"), alloc_int (sampleRate));
+		alloc_field (result, val_id ("byteLength"), alloc_int (size));
+		alloc_field (result, val_id ("envelopeBlock"), alloc_int (block));
+		alloc_field (result, val_id ("envelope"), buffer_val (envelope));
+		return result;
 
 	}
 
@@ -3792,6 +3914,7 @@ namespace lime {
 	DEFINE_PRIME3v (lime_al_filterf);
 	DEFINE_PRIME0 (lime_al_gen_aux);
 	DEFINE_PRIME0 (lime_al_gen_buffer);
+	DEFINE_PRIME2 (lime_audio_load_al_native);
 	DEFINE_PRIME1 (lime_al_gen_buffers);
 	DEFINE_PRIME0 (lime_al_gen_effect);
 	DEFINE_PRIME0 (lime_al_gen_filter);

@@ -74,6 +74,9 @@ class AudioBuffer
 	@:noCompletion private var __srcHowl:#if lime_howlerjs Howl #else Dynamic #end;
 	@:noCompletion private var __srcSound:#if flash Sound #else Dynamic #end;
 	@:noCompletion private var __srcVorbisFile:#if lime_vorbis VorbisFile #else Dynamic #end;
+	@:noCompletion private var __srcByteLength:Int = 0;
+	@:noCompletion private var __srcEnvelope:haxe.io.Bytes;
+	@:noCompletion private var __srcEnvelopeBlock:Int = 0;
 
 	#if commonjs
 	private static function __init__()
@@ -114,6 +117,8 @@ class AudioBuffer
 		}
 
 		data = null;
+		__srcEnvelope = null;
+		__srcByteLength = 0;
 		#end
 	}
 

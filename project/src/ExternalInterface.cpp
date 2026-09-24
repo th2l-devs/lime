@@ -2008,6 +2008,93 @@ namespace lime {
 	}
 
 
+	value lime_image_decode_native (value path, value premultiply, value bgra) {
+
+		std::string file (val_string (path));
+		bool multiply = val_bool (premultiply);
+		bool swap = val_bool (bgra);
+		ImageBuffer imageBuffer = ImageBuffer (alloc_null ());
+		imageBuffer.data = new ArrayBufferView (alloc_null ());
+		bool decoded = false;
+
+
+
+		Resource resource = Resource (file.c_str ());
+
+		#ifdef LIME_PNG
+		decoded = PNG::Decode (&resource, &imageBuffer, true);
+		#endif
+
+		#ifdef LIME_JPEG
+		if (!decoded) decoded = JPEG::Decode (&resource, &imageBuffer, true);
+		#endif
+
+		unsigned char* pixels = imageBuffer.data->buffer->b;
+		imageBuffer.data->buffer->b = 0;
+		imageBuffer.data->buffer->length = 0;
+
+		if (!decoded || !pixels || imageBuffer.width <= 0 || imageBuffer.height <= 0 || imageBuffer.bitsPerPixel != 32) {
+
+			if (pixels) free (pixels);
+
+			return alloc_null ();
+
+		}
+
+		size_t count = (size_t)imageBuffer.width * (size_t)imageBuffer.height;
+		unsigned char* p = pixels;
+
+		for (size_t i = 0; i < count; i++, p += 4) {
+
+			unsigned int r = p[0];
+			unsigned int g = p[1];
+			unsigned int b = p[2];
+			unsigned int a = p[3];
+
+			if (multiply && a != 255) {
+
+				r = (r * a + 127) / 255;
+				g = (g * a + 127) / 255;
+				b = (b * a + 127) / 255;
+
+			}
+
+			if (swap) {
+
+				p[0] = (unsigned char)b;
+				p[2] = (unsigned char)r;
+
+			} else {
+
+				p[0] = (unsigned char)r;
+				p[2] = (unsigned char)b;
+
+			}
+
+			p[1] = (unsigned char)g;
+
+		}
+
+
+
+		value result = alloc_empty_object ();
+		alloc_field (result, val_id ("width"), alloc_int (imageBuffer.width));
+		alloc_field (result, val_id ("height"), alloc_int (imageBuffer.height));
+		alloc_field (result, val_id ("pointer"), alloc_float ((double)(uintptr_t)pixels));
+		return result;
+
+	}
+
+
+	value lime_image_native_free (value pointer) {
+
+		double address = val_number (pointer);
+		if (address != 0) free ((void*)(uintptr_t)address);
+		return alloc_null ();
+
+	}
+
+
 	HL_PRIM ImageBuffer* HL_NAME(hl_image_load_file) (hl_vstring* data, ImageBuffer* buffer) {
 
 		Resource resource = Resource (data);
@@ -4149,6 +4236,8 @@ namespace lime {
 	DEFINE_PRIME2 (lime_image_load);
 	DEFINE_PRIME2 (lime_image_load_bytes);
 	DEFINE_PRIME2 (lime_image_load_file);
+	DEFINE_PRIME3 (lime_image_decode_native);
+	DEFINE_PRIME1 (lime_image_native_free);
 	DEFINE_PRIME0 (lime_jni_getenv);
 	DEFINE_PRIME2v (lime_joystick_event_manager_register);
 	DEFINE_PRIME1 (lime_joystick_get_device_guid);

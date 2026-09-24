@@ -130,7 +130,7 @@ class NativeAudioSource
 				}
 			}
 
-			dataLength = parent.buffer.data.length;
+			dataLength = parent.buffer.data != null ? parent.buffer.data.length : @:privateAccess parent.buffer.__srcByteLength;
 
 			handle = AL.createSource();
 
