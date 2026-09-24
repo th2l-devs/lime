@@ -10,6 +10,7 @@
 
 #include <app/Application.h>
 #include <app/ApplicationEvent.h>
+#include <math.h>
 #include <graphics/format/JPEG.h>
 #include <graphics/format/PNG.h>
 #include <graphics/utils/ImageDataUtil.h>
@@ -2081,6 +2082,187 @@ namespace lime {
 		alloc_field (result, val_id ("width"), alloc_int (imageBuffer.width));
 		alloc_field (result, val_id ("height"), alloc_int (imageBuffer.height));
 		alloc_field (result, val_id ("pointer"), alloc_float ((double)(uintptr_t)pixels));
+		return result;
+
+	}
+
+
+	struct MipLinearTable {
+
+		float v[256];
+
+		MipLinearTable () {
+
+			for (int i = 0; i < 256; i++) {
+
+				double c = i / 255.0;
+				v[i] = (float)(c <= 0.04045 ? c / 12.92 : pow ((c + 0.055) / 1.055, 2.4));
+
+			}
+
+		}
+
+	};
+
+
+	struct MipSrgbTable {
+
+		unsigned char v[4096];
+
+		MipSrgbTable () {
+
+			for (int i = 0; i < 4096; i++) {
+
+				double l = i / 4095.0;
+				double c = l <= 0.0031308 ? l * 12.92 : 1.055 * pow (l, 1.0 / 2.4) - 0.055;
+				int x = (int)(c * 255.0 + 0.5);
+				v[i] = (unsigned char)(x < 0 ? 0 : (x > 255 ? 255 : x));
+
+			}
+
+		}
+
+	};
+
+
+	static const float* mipToLinear () {
+
+		static const MipLinearTable table;
+		return table.v;
+
+	}
+
+
+	static const unsigned char* mipToSrgb () {
+
+		static const MipSrgbTable table;
+		return table.v;
+
+	}
+
+
+	static void mipDownsample (const unsigned char* src, int sw, int sh, unsigned char* dst, int dw, int dh) {
+
+		const float* toLinear = mipToLinear ();
+		const unsigned char* toSrgb = mipToSrgb ();
+
+		for (int y = 0; y < dh; y++) {
+
+			for (int x = 0; x < dw; x++) {
+
+				float sumA = 0;
+				float sumC[3] = { 0, 0, 0 };
+				int n = 0;
+
+				for (int oy = 0; oy < 2; oy++) {
+
+					int sy = y * 2 + oy;
+					if (sy >= sh) sy = sh - 1;
+
+					for (int ox = 0; ox < 2; ox++) {
+
+						int sx = x * 2 + ox;
+						if (sx >= sw) sx = sw - 1;
+						const unsigned char* p = src + ((size_t)sy * sw + sx) * 4;
+						float a = p[3] / 255.0f;
+						n++;
+						if (a <= 0) continue;
+						sumA += a;
+
+						for (int c = 0; c < 3; c++) {
+
+							int straight = (int)(p[c] / a + 0.5f);
+							if (straight > 255) straight = 255;
+							sumC[c] += toLinear[straight] * a;
+
+						}
+
+					}
+
+				}
+
+				unsigned char* d = dst + ((size_t)y * dw + x) * 4;
+				float alpha = sumA / n;
+
+				if (sumA <= 0) {
+
+					d[0] = d[1] = d[2] = d[3] = 0;
+					continue;
+
+				}
+
+				for (int c = 0; c < 3; c++) {
+
+					float lin = sumC[c] / sumA;
+					int idx = (int)(lin * 4095.0f + 0.5f);
+					if (idx < 0) idx = 0;
+					if (idx > 4095) idx = 4095;
+					d[c] = (unsigned char)(toSrgb[idx] * alpha + 0.5f);
+
+				}
+
+				d[3] = (unsigned char)(alpha * 255.0f + 0.5f);
+
+			}
+
+		}
+
+	}
+
+
+	value lime_image_decode_mips (value path, value bgra) {
+
+		value base = lime_image_decode_native (path, alloc_bool (true), bgra);
+		if (val_is_null (base)) return alloc_null ();
+
+		int width = val_int (val_field (base, val_id ("width")));
+		int height = val_int (val_field (base, val_id ("height")));
+		unsigned char* pixels = (unsigned char*)(uintptr_t)val_number (val_field (base, val_id ("pointer")));
+
+		int levels = 1;
+		size_t total = (size_t)width * height * 4;
+		int lw = width;
+		int lh = height;
+
+		while (lw > 1 || lh > 1) {
+
+			lw = lw > 1 ? lw / 2 : 1;
+			lh = lh > 1 ? lh / 2 : 1;
+			total += (size_t)lw * lh * 4;
+			levels++;
+
+		}
+
+		unsigned char* chain = (unsigned char*)realloc (pixels, total);
+
+		if (!chain) {
+
+			free (pixels);
+			return alloc_null ();
+
+		}
+
+		size_t offset = 0;
+		lw = width;
+		lh = height;
+
+		for (int i = 1; i < levels; i++) {
+
+			int nw = lw > 1 ? lw / 2 : 1;
+			int nh = lh > 1 ? lh / 2 : 1;
+			size_t next = offset + (size_t)lw * lh * 4;
+			mipDownsample (chain + offset, lw, lh, chain + next, nw, nh);
+			offset = next;
+			lw = nw;
+			lh = nh;
+
+		}
+
+		value result = alloc_empty_object ();
+		alloc_field (result, val_id ("width"), alloc_int (width));
+		alloc_field (result, val_id ("height"), alloc_int (height));
+		alloc_field (result, val_id ("levels"), alloc_int (levels));
+		alloc_field (result, val_id ("pointer"), alloc_float ((double)(uintptr_t)chain));
 		return result;
 
 	}
@@ -4238,6 +4420,7 @@ namespace lime {
 	DEFINE_PRIME2 (lime_image_load_file);
 	DEFINE_PRIME3 (lime_image_decode_native);
 	DEFINE_PRIME1 (lime_image_native_free);
+	DEFINE_PRIME2 (lime_image_decode_mips);
 	DEFINE_PRIME0 (lime_jni_getenv);
 	DEFINE_PRIME2v (lime_joystick_event_manager_register);
 	DEFINE_PRIME1 (lime_joystick_get_device_guid);
