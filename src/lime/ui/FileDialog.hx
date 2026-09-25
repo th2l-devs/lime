@@ -137,19 +137,27 @@ class FileDialog #if android implements JNISafety #end
 		#end
 
 		#if desktop
-		var worker = new ThreadPool(#if windows SINGLE_THREADED #end);
+		#if linux
+		if (title == null) title = switch (type)
+		{
+			case OPEN: "Open File";
+			case OPEN_MULTIPLE: "Open Files";
+			case OPEN_DIRECTORY: "Open Directory";
+			case SAVE: "Save File";
+		}
+		#end
+		defaultPath = fixDefaultPath(defaultPath);
 
-		worker.onComplete.add(function(result)
+		var dispatchResult = function(result:Dynamic)
 		{
 			switch (type)
 			{
 				case OPEN, OPEN_DIRECTORY, SAVE:
 					var path:String = cast result;
 
-					if (path != null)
+					if (path != null && path.length > 0)
 					{
-						// Makes sure the filename ends with extension
-						if (type == SAVE && filter != null && path.indexOf(".") == -1)
+						if (type == SAVE && filter != null && filter.indexOf("*") == -1 && filter.indexOf(",") == -1 && Path.extension(path) == "")
 						{
 							path += "." + filter;
 						}
@@ -173,7 +181,19 @@ class FileDialog #if android implements JNISafety #end
 						onCancel.dispatch();
 					}
 			}
-		});
+		};
+
+		if (runNative(nativeType(type), title, filter, defaultPath, function(paths:Array<String>)
+		{
+			dispatchResult(type == OPEN_MULTIPLE ? paths : (paths.length > 0 ? paths[0] : null));
+		}))
+		{
+			return true;
+		}
+
+		var worker = new ThreadPool(#if windows SINGLE_THREADED #end);
+
+		worker.onComplete.add(dispatchResult);
 
 		worker.run(function(_, __)
 		{
@@ -186,7 +206,6 @@ class FileDialog #if android implements JNISafety #end
 
 					var path = null;
 					#if (!macro && lime_cffi)
-					trace(defaultPath);
 					path = CFFI.stringValue(NativeCFFI.lime_file_dialog_open_file(title, filter, defaultPath));
 					#end
 
@@ -267,6 +286,78 @@ class FileDialog #if android implements JNISafety #end
 		#end
 	}
 
+	static function nativeType(type:FileDialogType):Int
+	{
+		return switch (type)
+		{
+			case OPEN: 0;
+			case OPEN_MULTIPLE: 1;
+			case SAVE: 2;
+			case OPEN_DIRECTORY: 3;
+		}
+	}
+
+	static function fixDefaultPath(path:String):String
+	{
+		#if sys
+		if (path == null || path.length == 0) return path;
+		#if windows
+		path = StringTools.replace(path, "/", "\\");
+		var sep = "\\";
+		#else
+		var sep = "/";
+		#end
+		try
+		{
+			if (FileSystem.exists(path) && FileSystem.isDirectory(path))
+			{
+				var last = path.charAt(path.length - 1);
+				if (last != "/" && last != "\\") path += sep;
+				return FileSystem.absolutePath(path.substr(0, path.length - 1)) + sep;
+			}
+			var dir = Path.directory(path);
+			if (dir != "" && !FileSystem.exists(dir)) return Path.withoutDirectory(path);
+			if (dir != "") return FileSystem.absolutePath(dir) + sep + Path.withoutDirectory(path);
+		}
+		catch (e:Dynamic) {}
+		#end
+		return path;
+	}
+
+	function runNative(kind:Int, title:String, filter:String, defaultPath:String, done:Array<String>->Void):Bool
+	{
+		#if (cpp && !cppia && lime_cffi && !macro && desktop)
+		var id:Int = 0;
+		try
+		{
+			id = NativeCFFI.lime_file_dialog_async_start(kind, title, filter, defaultPath);
+		}
+		catch (e:Dynamic)
+		{
+			id = 0;
+		}
+		if (id <= 0) return false;
+
+		var timer = new haxe.Timer(16);
+		timer.run = function()
+		{
+			var result:Dynamic = NativeCFFI.lime_file_dialog_async_poll(id);
+			if (result == null) return;
+			timer.stop();
+			var paths:Array<String> = [];
+			var list:Array<Dynamic> = cast result;
+			for (item in list)
+			{
+				if (item != null) paths.push(Std.string(item));
+			}
+			done(paths);
+		};
+		return true;
+		#else
+		return false;
+		#end
+	}
+
 	/**
 		Shows an open file dialog. If successful, `onOpen` will trigger with the file contents.
 
@@ -281,6 +372,32 @@ class FileDialog #if android implements JNISafety #end
 	public function open(filter:String = null, defaultPath:String = null, title:String = null):Bool
 	{
 		#if (desktop && sys)
+		#if linux
+		if (title == null) title = "Open File";
+		#end
+		defaultPath = fixDefaultPath(defaultPath);
+
+		var finish = function(path:String)
+		{
+			if (path != null)
+			{
+				try
+				{
+					var data = File.getBytes(path);
+					onOpen.dispatch(data);
+					return;
+				}
+				catch (e:Dynamic) {}
+			}
+
+			onCancel.dispatch();
+		};
+
+		if (runNative(0, title, filter, defaultPath, function(paths:Array<String>) finish(paths.length > 0 ? paths[0] : null)))
+		{
+			return true;
+		}
+
 		var worker = new ThreadPool(#if windows SINGLE_THREADED #end);
 
 		worker.onComplete.add(function(path:String)
@@ -349,6 +466,32 @@ class FileDialog #if android implements JNISafety #end
 		#end
 
 		#if (desktop && sys)
+		#if linux
+		if (title == null) title = "Save File";
+		#end
+		defaultPath = fixDefaultPath(defaultPath);
+
+		var finish = function(path:String)
+		{
+			if (path != null)
+			{
+				try
+				{
+					File.saveBytes(path, data);
+					onSave.dispatch(path);
+					return;
+				}
+				catch (e:Dynamic) {}
+			}
+
+			onCancel.dispatch();
+		};
+
+		if (runNative(2, title, filter, defaultPath, function(paths:Array<String>) finish(paths.length > 0 ? paths[0] : null)))
+		{
+			return true;
+		}
+
 		var worker = new ThreadPool(#if windows SINGLE_THREADED #end);
 
 		worker.onComplete.add(function(path:String)

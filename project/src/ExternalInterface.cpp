@@ -762,6 +762,46 @@ namespace lime {
 	}
 
 
+	int lime_file_dialog_async_start (int type, HxString title, HxString filter, HxString defaultPath) {
+
+		#ifdef LIME_TINYFILEDIALOGS
+		return FileDialog::AsyncStart (type, hxstring_to_wstring (title), hxstring_to_wstring (filter), hxstring_to_wstring (defaultPath));
+		#else
+		return 0;
+		#endif
+
+	}
+
+
+	value lime_file_dialog_async_poll (int id) {
+
+		#ifdef LIME_TINYFILEDIALOGS
+
+		std::vector<std::wstring*> files;
+		int state = FileDialog::AsyncPoll (id, &files);
+
+		if (state == 0) return alloc_null ();
+
+		value result = alloc_array (files.size ());
+
+		for (int i = 0; i < (int)files.size (); i++) {
+
+			val_array_set_i (result, i, wstring_to_value (files[i]));
+			delete files[i];
+
+		}
+
+		return result;
+
+		#else
+
+		return alloc_array (0);
+
+		#endif
+
+	}
+
+
 	value lime_file_dialog_open_directory (HxString title, HxString filter, HxString defaultPath) {
 
 		#ifdef LIME_TINYFILEDIALOGS
@@ -4365,6 +4405,8 @@ namespace lime {
 	DEFINE_PRIME2 (lime_deflate_compress);
 	DEFINE_PRIME2 (lime_deflate_decompress);
 	DEFINE_PRIME2v (lime_drop_event_manager_register);
+	DEFINE_PRIME4 (lime_file_dialog_async_start);
+	DEFINE_PRIME1 (lime_file_dialog_async_poll);
 	DEFINE_PRIME3 (lime_file_dialog_open_directory);
 	DEFINE_PRIME3 (lime_file_dialog_open_file);
 	DEFINE_PRIME3 (lime_file_dialog_open_files);

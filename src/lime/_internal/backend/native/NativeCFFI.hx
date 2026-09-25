@@ -99,6 +99,10 @@ class NativeCFFI
 
 	@:cffi private static function lime_drop_event_manager_register(callback:Dynamic, eventObject:Dynamic):Void;
 
+	@:cffi private static function lime_file_dialog_async_start(type:Int, title:String, filter:String, defaultPath:String):Int;
+
+	@:cffi private static function lime_file_dialog_async_poll(id:Int):Dynamic;
+
 	@:cffi private static function lime_file_dialog_open_directory(title:String, filter:String, defaultPath:String):Dynamic;
 
 	@:cffi private static function lime_file_dialog_open_file(title:String, filter:String, defaultPath:String):Dynamic;
@@ -415,6 +419,10 @@ class NativeCFFI
 		"ooo", false));
 	private static var lime_drop_event_manager_register = new cpp.Callable<cpp.Object->cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime",
 		"lime_drop_event_manager_register", "oov", false));
+	private static var lime_file_dialog_async_start = new cpp.Callable<Int->String->String->String->Int>(cpp.Prime._loadPrime("lime",
+		"lime_file_dialog_async_start", "isssi", false));
+	private static var lime_file_dialog_async_poll = new cpp.Callable<Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_file_dialog_async_poll", "io",
+		false));
 	private static var lime_file_dialog_open_directory = new cpp.Callable<String->String->String->cpp.Object>(cpp.Prime._loadPrime("lime",
 		"lime_file_dialog_open_directory", "ssso", false));
 	private static var lime_file_dialog_open_file = new cpp.Callable<String->String->String->cpp.Object>(cpp.Prime._loadPrime("lime",
@@ -680,6 +688,8 @@ class NativeCFFI
 	private static var lime_deflate_compress = CFFI.load("lime", "lime_deflate_compress", 2);
 	private static var lime_deflate_decompress = CFFI.load("lime", "lime_deflate_decompress", 2);
 	private static var lime_drop_event_manager_register = CFFI.load("lime", "lime_drop_event_manager_register", 2);
+	private static var lime_file_dialog_async_start = CFFI.load("lime", "lime_file_dialog_async_start", 4);
+	private static var lime_file_dialog_async_poll = CFFI.load("lime", "lime_file_dialog_async_poll", 1);
 	private static var lime_file_dialog_open_directory = CFFI.load("lime", "lime_file_dialog_open_directory", 3);
 	private static var lime_file_dialog_open_file = CFFI.load("lime", "lime_file_dialog_open_file", 3);
 	private static var lime_file_dialog_open_files = CFFI.load("lime", "lime_file_dialog_open_files", 3);

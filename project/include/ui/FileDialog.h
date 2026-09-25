@@ -17,6 +17,8 @@ namespace lime {
 			static std::wstring* OpenFile (std::wstring* title = 0, std::wstring* filter = 0, std::wstring* defaultPath = 0);
 			static void OpenFiles (std::vector<std::wstring*>* files, std::wstring* title = 0, std::wstring* filter = 0, std::wstring* defaultPath = 0);
 			static std::wstring* SaveFile (std::wstring* title = 0, std::wstring* filter = 0, std::wstring* defaultPath = 0);
+			static int AsyncStart (int type, std::wstring* title, std::wstring* filter, std::wstring* defaultPath);
+			static int AsyncPoll (int id, std::vector<std::wstring*>* results);
 
 	};
 

@@ -111,6 +111,37 @@ misrepresented as being the original software.
  /*#include <io.h>*/
  #define SLASH "\\"
  int tinyfd_winUtf8 = 0 ; /* on windows string char can be 0:MBSC or 1:UTF-8 */
+ #ifndef TINYFD_NOLIB
+ static __declspec(thread) HWND tinyfdOwner = NULL;
+ void tinyfd_setOwnerWindow(void * aOwner)
+ {
+	tinyfdOwner = (HWND)aOwner;
+ }
+ static void tinyfdFullPathW(wchar_t * aioBuff, wchar_t const * aDirname)
+ {
+	wchar_t lName[1024];
+	size_t lLen;
+	if (!aDirname || !wcslen(aDirname)) return;
+	lLen = wcslen(aDirname) + 1 + wcslen(aioBuff);
+	if (lLen + 1 >= 1024) return;
+	wcscpy(lName, aioBuff);
+	wcscpy(aioBuff, aDirname);
+	wcscat(aioBuff, L"\\");
+	wcscat(aioBuff, lName);
+ }
+ static HWND tinyfdOwnerWindow(void)
+ {
+	DWORD lPid = 0;
+	HWND w;
+	if (tinyfdOwner && IsWindow(tinyfdOwner)) return tinyfdOwner;
+	w = GetActiveWindow();
+	if (w) return w;
+	w = GetForegroundWindow();
+	if (!w) return NULL;
+	GetWindowThreadProcessId(w, &lPid);
+	return lPid == GetCurrentProcessId() ? w : NULL;
+ }
+ #endif
 #else
  #include <limits.h>
  #include <unistd.h>
@@ -1135,6 +1166,7 @@ wchar_t const * tinyfd_saveFileDialogW(
 
 	getPathWithoutFinalSlashW(lDirname, aDefaultPathAndFile);
 	getLastNameW(lBuff, aDefaultPathAndFile);
+	tinyfdFullPathW(lBuff, lDirname);
 
 	if (aNumOfFilterPatterns > 0)
 	{
@@ -1165,7 +1197,7 @@ wchar_t const * tinyfd_saveFileDialogW(
 	}
 
 	ofn.lStructSize = sizeof(OPENFILENAMEW);
-	ofn.hwndOwner = 0;
+	ofn.hwndOwner = tinyfdOwnerWindow();
 	ofn.hInstance = 0;
 	ofn.lpstrFilter = lFilterPatterns && wcslen(lFilterPatterns) ? lFilterPatterns : NULL;
 	ofn.lpstrCustomFilter = NULL;
@@ -1284,6 +1316,7 @@ wchar_t const * tinyfd_openFileDialogW(
 
 	getPathWithoutFinalSlashW(lDirname, aDefaultPathAndFile);
 	getLastNameW(lBuff, aDefaultPathAndFile);
+	tinyfdFullPathW(lBuff, lDirname);
 
 	if (aNumOfFilterPatterns > 0)
 	{
@@ -1314,7 +1347,7 @@ wchar_t const * tinyfd_openFileDialogW(
 	}
 
 	ofn.lStructSize = sizeof(OPENFILENAME);
-	ofn.hwndOwner = 0;
+	ofn.hwndOwner = tinyfdOwnerWindow();
 	ofn.hInstance = 0;
 	ofn.lpstrFilter = lFilterPatterns && wcslen(lFilterPatterns) ? lFilterPatterns : NULL;
 	ofn.lpstrCustomFilter = NULL;
@@ -1475,7 +1508,7 @@ wchar_t const * tinyfd_selectFolderDialogW(
 
 	lHResult = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
-	bInfo.hwndOwner = 0;
+	bInfo.hwndOwner = tinyfdOwnerWindow();
 	bInfo.pidlRoot = NULL;
 	bInfo.pszDisplayName = lBuff;
 	bInfo.lpszTitle = aTitle && wcslen(aTitle) ? aTitle : NULL;
@@ -1773,7 +1806,7 @@ static char const * saveFileDialogWinGuiA (
 	}
 
 	ofn.lStructSize     = sizeof(OPENFILENAME) ;
-	ofn.hwndOwner       = 0 ;
+	ofn.hwndOwner       = tinyfdOwnerWindow();
 	ofn.hInstance       = 0 ;
 	ofn.lpstrFilter		= lFilterPatterns && strlen(lFilterPatterns) ? lFilterPatterns : NULL;
 	ofn.lpstrCustomFilter = NULL ;
@@ -1866,7 +1899,7 @@ static char const * openFileDialogWinGuiA (
 	}
 
 	ofn.lStructSize     = sizeof ( OPENFILENAME ) ;
-	ofn.hwndOwner       = 0 ;
+	ofn.hwndOwner       = tinyfdOwnerWindow();
 	ofn.hInstance       = 0 ;
 	ofn.lpstrFilter		= lFilterPatterns && strlen(lFilterPatterns) ? lFilterPatterns : NULL;
 	ofn.lpstrCustomFilter = NULL ;
@@ -1952,7 +1985,7 @@ static char const * selectFolderDialogWinGuiA (
 	lHResult = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
 	/* we can't use aDefaultPath */
-	bInfo.hwndOwner = 0 ;
+	bInfo.hwndOwner = tinyfdOwnerWindow();
 	bInfo.pidlRoot = NULL ;
 	bInfo.pszDisplayName = aoBuff ;
 	bInfo.lpszTitle = aTitle && strlen(aTitle) ? aTitle : NULL;
