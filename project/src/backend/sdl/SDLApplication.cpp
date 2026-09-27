@@ -41,6 +41,14 @@ namespace lime {
 
 		SDL_SetHint (SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
 
+		#if defined (HX_WINDOWS) && !defined (HX_WINRT)
+		// SDL3 makes the process per-monitor DPI aware by default, SDL2 left it unaware.
+		// Keep the SDL2 behaviour (lime defaults to allow-high-dpi="false" on Windows),
+		// otherwise scaled displays render at native resolution and use far more memory.
+		// Can still be overridden with the SDL_WINDOWS_DPI_AWARENESS environment variable.
+		SDL_SetHintWithPriority ("SDL_WINDOWS_DPI_AWARENESS", "unaware", SDL_HINT_DEFAULT);
+		#endif
+
 		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK | SDL_INIT_SENSOR;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
