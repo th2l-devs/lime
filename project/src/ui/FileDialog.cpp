@@ -5,9 +5,195 @@
 #include <sstream>
 
 #include <tinyfiledialogs.h>
+#include <atomic>
+#include <map>
+#include <thread>
+
+#ifdef HX_WINDOWS
+#include <windows.h>
+#include <objbase.h>
+extern "C" void tinyfd_setOwnerWindow (void* aOwner);
+#endif
 
 
 namespace lime {
+
+
+	struct AsyncFileDialog {
+
+		int type;
+		std::wstring* title;
+		std::wstring* filter;
+		std::wstring* defaultPath;
+		void* owner;
+		std::atomic<unsigned long> threadId;
+		bool placed;
+		bool disabledOwner;
+		std::atomic<bool> done;
+		std::vector<std::wstring*> results;
+		std::thread worker;
+
+	};
+
+
+	static std::map<int, AsyncFileDialog*> asyncFileDialogs;
+	static int nextAsyncFileDialog = 1;
+
+
+	static void RunAsyncFileDialog (AsyncFileDialog* dialog) {
+
+		#ifdef HX_WINDOWS
+		HRESULT com = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+		dialog->threadId = GetCurrentThreadId ();
+		tinyfd_setOwnerWindow ((void*)(intptr_t)-1);
+		#endif
+
+		std::wstring* path = 0;
+
+		switch (dialog->type) {
+
+			case 0: path = FileDialog::OpenFile (dialog->title, dialog->filter, dialog->defaultPath); break;
+			case 1: FileDialog::OpenFiles (&dialog->results, dialog->title, dialog->filter, dialog->defaultPath); break;
+			case 2: path = FileDialog::SaveFile (dialog->title, dialog->filter, dialog->defaultPath); break;
+			case 3: path = FileDialog::OpenDirectory (dialog->title, dialog->filter, dialog->defaultPath); break;
+			default: break;
+
+		}
+
+		if (path) dialog->results.push_back (path);
+
+		#ifdef HX_WINDOWS
+		tinyfd_setOwnerWindow (NULL);
+		if (com == S_OK || com == S_FALSE) CoUninitialize ();
+		#endif
+
+		dialog->done = true;
+
+	}
+
+
+#ifdef HX_WINDOWS
+	static BOOL CALLBACK FindDialogWindow (HWND hwnd, LPARAM param) {
+
+		if (!IsWindowVisible (hwnd) || GetWindow (hwnd, GW_OWNER) != NULL) return TRUE;
+		*(HWND*)param = hwnd;
+		return FALSE;
+
+	}
+
+	static void KeepDialogInFront (AsyncFileDialog* dialog) {
+
+		unsigned long threadId = dialog->threadId;
+		if (!threadId) return;
+		HWND found = NULL;
+		EnumThreadWindows (threadId, FindDialogWindow, (LPARAM)&found);
+		if (!found) return;
+		HWND game = (HWND)dialog->owner;
+
+		if (!dialog->placed && game && IsWindow (game)) {
+
+			RECT g, d;
+			if (GetWindowRect (game, &g) && GetWindowRect (found, &d)) {
+				int w = d.right - d.left, h = d.bottom - d.top;
+				int x = g.left + ((g.right - g.left) - w) / 2, y = g.top + ((g.bottom - g.top) - h) / 2;
+				SetWindowPos (found, HWND_TOP, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+			}
+			dialog->placed = true;
+			SetForegroundWindow (found);
+
+		}
+
+		if (game && GetForegroundWindow () == game) SetForegroundWindow (found);
+
+	}
+#endif
+
+	int FileDialog::AsyncStart (int type, std::wstring* title, std::wstring* filter, std::wstring* defaultPath) {
+
+		AsyncFileDialog* dialog = new AsyncFileDialog ();
+		dialog->type = type;
+		dialog->title = title;
+		dialog->filter = filter;
+		dialog->defaultPath = defaultPath;
+		dialog->owner = 0;
+		dialog->threadId = 0;
+		dialog->placed = false;
+		dialog->disabledOwner = false;
+		dialog->done = false;
+
+		#ifdef HX_WINDOWS
+		HWND owner = GetActiveWindow ();
+		if (!owner) {
+			owner = GetForegroundWindow ();
+			DWORD pid = 0;
+			if (owner) GetWindowThreadProcessId (owner, &pid);
+			if (pid != GetCurrentProcessId ()) owner = NULL;
+		}
+		dialog->owner = owner;
+		if (owner && IsWindowEnabled (owner)) {
+			EnableWindow (owner, FALSE);
+			dialog->disabledOwner = true;
+		}
+		#endif
+
+		try {
+
+			dialog->worker = std::thread (RunAsyncFileDialog, dialog);
+
+		} catch (...) {
+
+			if (title) delete title;
+			if (filter) delete filter;
+			if (defaultPath) delete defaultPath;
+			#ifdef HX_WINDOWS
+			if (dialog->disabledOwner && dialog->owner) EnableWindow ((HWND)dialog->owner, TRUE);
+			#endif
+			delete dialog;
+			return 0;
+
+		}
+
+		int id = nextAsyncFileDialog++;
+		asyncFileDialogs[id] = dialog;
+		return id;
+
+	}
+
+
+	int FileDialog::AsyncPoll (int id, std::vector<std::wstring*>* results) {
+
+		std::map<int, AsyncFileDialog*>::iterator it = asyncFileDialogs.find (id);
+		if (it == asyncFileDialogs.end ()) return -1;
+
+		AsyncFileDialog* dialog = it->second;
+		if (!dialog->done) {
+			#ifdef HX_WINDOWS
+			KeepDialogInFront (dialog);
+			#endif
+			return 0;
+		}
+		if (dialog->worker.joinable ()) dialog->worker.join ();
+		#ifdef HX_WINDOWS
+		if (dialog->disabledOwner && dialog->owner && IsWindow ((HWND)dialog->owner)) {
+			EnableWindow ((HWND)dialog->owner, TRUE);
+			SetForegroundWindow ((HWND)dialog->owner);
+		}
+		#endif
+
+		for (size_t i = 0; i < dialog->results.size (); i++) {
+
+			results->push_back (dialog->results[i]);
+
+		}
+
+		if (dialog->title) delete dialog->title;
+		if (dialog->filter) delete dialog->filter;
+		if (dialog->defaultPath) delete dialog->defaultPath;
+		asyncFileDialogs.erase (it);
+		delete dialog;
+		return 1;
+
+	}
 
 
 	std::string* wstring_to_string (std::wstring* source) {
@@ -255,8 +441,8 @@ namespace lime {
 
 		#ifdef HX_WINDOWS
 
-		std::wstring temp (L"*.");
-		const wchar_t* filters[] = { filter ? (temp + *filter).c_str () : NULL };
+		std::wstring pattern = filter ? std::wstring (L"*.") + *filter : std::wstring ();
+		const wchar_t* filters[] = { filter ? pattern.c_str () : NULL };
 
 		const wchar_t* path = tinyfd_saveFileDialogW (title ? title->c_str () : 0, defaultPath ? defaultPath->c_str () : 0, filter ? 1 : 0, filter ? filters : NULL, NULL);
 

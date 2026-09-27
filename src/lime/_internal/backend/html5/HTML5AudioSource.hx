@@ -26,7 +26,23 @@ class HTML5AudioSource
 
 	public function dispose():Void {}
 
-	public function init():Void {}
+	public function init():Void
+	{
+		#if lime_howlerjs
+		// Initialize the panner with default values
+		parent.buffer.src.pannerAttr(
+			{
+				coneInnerAngle: 360,
+				coneOuterAngle: 360,
+				coneOuterGain: 0,
+				distanceModel: "inverse",
+				maxDistance: 10000,
+				refDistance: 1,
+				rolloffFactor: 1,
+				panningModel: "equalpower" // Default to equalpower for better performance
+			});
+		#end
+	}
 
 	public function play():Void
 	{
@@ -152,6 +168,43 @@ class HTML5AudioSource
 		return value;
 	}
 
+	public function getCurrentTimePrecise():Float
+	{
+		if (id == -1)
+		{
+			return 0;
+		}
+
+		#if lime_howlerjs
+		if (completed)
+		{
+			return getLength();
+		}
+		else if (parent.buffer != null && parent.buffer.__srcHowl != null)
+		{
+			var time:Float = parent.buffer.__srcHowl.seek(id) * 1000 - parent.offset;
+			if (time < 0) return 0;
+			return time;
+		}
+		#end
+
+		return 0;
+	}
+
+	public function setCurrentTimePrecise(value:Float):Float
+	{
+		#if lime_howlerjs
+		if (parent.buffer != null && parent.buffer.__srcHowl != null)
+		{
+			var pos = (value + parent.offset) / 1000;
+			if (pos < 0) pos = 0;
+			parent.buffer.__srcHowl.seek(pos, id);
+		}
+		#end
+
+		return value;
+	}
+
 	public function getGain():Float
 	{
 		return gain;
@@ -218,10 +271,9 @@ class HTML5AudioSource
 		#if lime_howlerjs
 		parent.buffer.__srcHowl.rate(value);
 		#end
-		
+
 		return getPitch();
 	}
-	
 
 	public function getPosition():Vector4
 	{

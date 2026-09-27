@@ -602,5 +602,10 @@ class OpenALAudioContext
 	{
 		return ALC.reopenDeviceSOFT(device, newDeviceName, attributes);
 	}
+
+	public function getDeviceList(all:Bool = true):Array<String>
+	{
+		return ALC.getDeviceList(all);
+	}
 }
 #end

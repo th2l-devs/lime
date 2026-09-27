@@ -504,9 +504,9 @@ class PlatformSetup
 
 				if (volumePath != "" && FileSystem.exists(volumePath))
 				{
-					var apps = [];
-					var packages = [];
-					var executables = [];
+					var apps:Array<String> = [];
+					var packages:Array<String> = [];
+					var executables:Array<String> = [];
 
 					var files:Array<String> = FileSystem.readDirectory(volumePath);
 
@@ -578,7 +578,7 @@ class PlatformSetup
 		Log.println("download and extract the Adobe AIR SDK.");
 		Log.println("");
 
-		getDefineValue("AIR_SDK", "Path to AIR SDK");
+		getDefineValue("AIR_SDK", "Absolute path to AIR SDK");
 
 		Log.println("");
 		Log.println("Setup complete.");
@@ -593,12 +593,12 @@ class PlatformSetup
 		Log.println("the SDK manager from Android Studio.\x1b[0m");
 		Log.println("");
 
-		getDefineValue("ANDROID_SDK", "Path to Android SDK");
-		getDefineValue("ANDROID_NDK_ROOT", "Path to Android NDK");
+		getDefineValue("ANDROID_SDK", "Absolute path to Android SDK");
+		getDefineValue("ANDROID_NDK_ROOT", "Absolute path to Android NDK");
 
 		if (System.hostPlatform != MAC)
 		{
-			getDefineValue("JAVA_HOME", "Path to Java JDK");
+			getDefineValue("JAVA_HOME", "Absolute path to Java JDK");
 		}
 
 		if (ConfigHelper.getConfigValue("ANDROID_SETUP") == null)
@@ -616,7 +616,7 @@ class PlatformSetup
 		Log.println("and extract the Electron runtime on your system.");
 		Log.println("");
 
-		getDefineValue("ELECTRON_PATH", "Path to Electron runtime");
+		getDefineValue("ELECTRON_PATH", "Absolute path to Electron runtime");
 
 		Log.println("");
 		Haxelib.runCommand("", ["install", "electron"], true, true);
@@ -816,6 +816,11 @@ class PlatformSetup
 			setupHaxelib(new Haxelib("lime"));
 		}
 
+		if (targetFlags.exists("noalias"))
+		{
+			return;
+		}
+
 		var haxePathEnv = Sys.getEnv("HAXEPATH");
 		var haxePath = haxePathEnv;
 
@@ -870,13 +875,16 @@ class PlatformSetup
 			var installedCommand = false;
 			var answer = YES;
 
-			if (targetFlags.exists("y"))
+			if (!(targetFlags.exists("alias") || targetFlags.exists("cli")))
 			{
-				Sys.println("Do you want to install the \"lime\" command? [y/n/a] y");
-			}
-			else
-			{
-				answer = CLIHelper.ask("Do you want to install the \"lime\" command?");
+				if (targetFlags.exists("y"))
+				{
+					Sys.println("Do you want to install the \"lime\" command? [y/n/a] y");
+				}
+				else
+				{
+					answer = CLIHelper.ask("Do you want to install the \"lime\" command?");
+				}
 			}
 
 			if (answer == YES || answer == ALWAYS)
@@ -938,11 +946,6 @@ class PlatformSetup
 				Sys.println("sudo chmod 755 /usr/local/bin/lime");
 				Sys.println("");
 			}
-		}
-
-		if (System.hostPlatform == MAC)
-		{
-			ConfigHelper.writeConfigValue("MAC_USE_CURRENT_SDK", "1");
 		}
 	}
 
@@ -1074,8 +1077,13 @@ class PlatformSetup
 			setupHaxelib(new Haxelib("openfl"));
 		}
 
+		if (targetFlags.exists("noalias"))
+		{
+			return;
+		}
+
 		var haxePath = Sys.getEnv("HAXEPATH");
-		var project = null;
+		var project:HXProject = null;
 
 		try
 		{
@@ -1118,13 +1126,16 @@ class PlatformSetup
 			var installedCommand = false;
 			var answer = YES;
 
-			if (targetFlags.exists("y"))
+			if (!(targetFlags.exists("alias") || targetFlags.exists("cli")))
 			{
-				Sys.println("Do you want to install the \"openfl\" command? [y/n/a] y");
-			}
-			else
-			{
-				answer = CLIHelper.ask("Do you want to install the \"openfl\" command?");
+				if (targetFlags.exists("y"))
+				{
+					Sys.println("Do you want to install the \"openfl\" command? [y/n/a] y");
+				}
+				else
+				{
+					answer = CLIHelper.ask("Do you want to install the \"openfl\" command?");
+				}
 			}
 
 			if (answer == YES || answer == ALWAYS)
@@ -1188,11 +1199,6 @@ class PlatformSetup
 				Sys.println("");
 			}
 		}
-
-		if (System.hostPlatform == MAC)
-		{
-			ConfigHelper.writeConfigValue("MAC_USE_CURRENT_SDK", "1");
-		}
 	}
 
 	public static function setupWebAssembly():Void
@@ -1203,7 +1209,7 @@ class PlatformSetup
 		Log.println("After install, the SDK path may be at \"emsdk/upstream/emscripten\"");
 		Log.println("");
 
-		getDefineValue("EMSCRIPTEN_SDK", "Path to Emscripten SDK");
+		getDefineValue("EMSCRIPTEN_SDK", "Absolute path to Emscripten SDK");
 
 		Log.println("");
 		Log.println("Setup complete.");
@@ -1229,13 +1235,19 @@ class PlatformSetup
 
 	public static function setupHL():Void
 	{
-		getDefineValue("HL_PATH", "Path to a custom version of Hashlink. Leave empty to use lime's default version.");
+		var message = "Absolute path to a custom version of HashLink.";
+		if (ConfigHelper.getConfigValue("HL_PATH") == null) {
+			message += " Leave empty to use Lime's default bundled version.";
+		} else {
+			message += " Leave empty to keep the currently configured version. To restore Lime's default bundled version, run the command: lime config remove HL_PATH";
+		}
+		getDefineValue("HL_PATH", message);
 		if (System.hostPlatform == MAC)
 		{
-			Log.println("To use the hashlink debugger on macOS, the hl executable needs to be signed.");
+			Log.println("To use the HashLink debugger on macOS, the hl executable needs to be signed.");
 			if (ConfigHelper.getConfigValue("HL_PATH") != null)
 			{
-				Log.println("When building HL from source, make sure to have run `make codesign_osx` before installing.");
+				Log.println("When building HashLink from source, you must run `make codesign_osx` before installing.");
 			}
 			else
 			{

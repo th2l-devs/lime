@@ -98,12 +98,4 @@ namespace lime {
 	}
 
 
-	int Joystick::GetNumTrackballs (int id) {
-
-		SDL_Joystick* joystick = GetJoystick (id);
-		return joystick ? SDL_GetNumJoystickBalls (joystick) : 0;
-
-	}
-
-
 }

@@ -155,15 +155,20 @@ class CFFI
 
 			if (result == null)
 			{
-				var haxelib = __findHaxelib("lime");
+				var ndllFolder = __findNDLLFolder();
 
-				if (haxelib != "")
+				if (ndllFolder != "")
 				{
-					result = __tryLoad(haxelib + "/ndll/" + __sysName() + "/" + library, library, method, args);
+					result = __tryLoad(ndllFolder + __sysName() + "/" + library, library, method, args);
 
 					if (result == null)
 					{
-						result = __tryLoad(haxelib + "/ndll/" + __sysName() + "64/" + library, library, method, args);
+						result = __tryLoad(ndllFolder + __sysName() + "64/" + library, library, method, args);
+					}
+
+					if (result == null)
+					{
+						result = __tryLoad(ndllFolder + __sysName() + "Arm64/" + library, library, method, args);
 					}
 				}
 			}
@@ -204,39 +209,36 @@ class CFFI
 		#end
 	}
 
-	private static function __findHaxelib(library:String):String
+	@:dox(hide) #if !hl inline #end public static function stringValue(#if hl value:hl.Bytes #else value:String #end):String
+	{
+		#if hl
+		return value != null ? @:privateAccess String.fromUTF8(value) : null;
+		#else
+		return value;
+		#end
+	}
+
+	private static function __findNDLLFolder():String
 	{
 		#if (sys && !macro && !html5)
+		var process = new Process("haxelib", ["path", "lime"]);
+
 		try
 		{
-			var proc = new Process("haxelib", ["path", library]);
-
-			if (proc != null)
+			while (true)
 			{
-				var stream = proc.stdout;
+				var line = StringTools.trim(process.stdout.readLine());
 
-				try
+				if (StringTools.startsWith(line, "-L "))
 				{
-					while (true)
-					{
-						var s = stream.readLine();
-
-						if (s.substr(0, 1) != "-")
-						{
-							stream.close();
-							proc.close();
-							__loaderTrace("Found haxelib " + s);
-							return s;
-						}
-					}
+					process.close();
+					return Path.addTrailingSlash(line.substr(3));
 				}
-				catch (e:Dynamic) {}
-
-				stream.close();
-				proc.close();
 			}
 		}
 		catch (e:Dynamic) {}
+
+		process.close();
 		#end
 
 		return "";
@@ -286,12 +288,14 @@ class CFFI
 		if (!__loadedNekoAPI)
 		{
 			var init:Dynamic = null;
+			var error:Dynamic = null;
 			try
 			{
 				init = load("lime", "neko_init", 5);
 			}
 			catch (e:Dynamic)
 			{
+				error = e;
 			}
 
 			if (init != null)
@@ -308,11 +312,12 @@ class CFFI
 			}
 			else if (!lazy)
 			{
-				var ndllFolder = __findHaxelib("lime") + "/ndll/" + __sysName();
-				throw "Could not find lime.ndll. This file is provided with Lime's Haxelib releases, but not via Git. "
+				var ndllFolder = __findNDLLFolder() + __sysName();
+				throw "Could not load lime.ndll. This file is provided with Lime's Haxelib releases, but not via Git. "
 					+ "Please copy it from Lime's latest Haxelib release into either "
 					+ ndllFolder + " or " + ndllFolder + "64, as appropriate for your system. "
-					+ "Advanced users may run `lime rebuild cpp` instead.";
+					+ "Advanced users may run `lime rebuild cpp` instead."
+					+ (error != null ? '\nInternal error: $error' : "");
 			}
 		}
 	}

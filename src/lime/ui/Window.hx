@@ -30,6 +30,15 @@ class Window
 {
 	public var application(default, null):Application;
 	public var borderless(get, set):Bool;
+
+	/**
+	 * A borderless window pinned to exactly cover its display's bounds, without using
+	 * the native fullscreen flag. Unlike `fullscreen`, this is not subject to the OS's
+	 * minimize-on-focus-loss behavior for fullscreen windows, so alt-tabbing away leaves
+	 * it in place. The window is also locked in position and size for as long as this is
+	 * enabled - if the OS or user moves/resizes it anyway, it snaps back.
+	**/
+	public var borderlessFullscreen(get, set):Bool;
 	public var context(default, null):RenderContext;
 	public var cursor(get, set):MouseCursor;
 	public var display(get, null):Display;
@@ -67,25 +76,68 @@ class Window
 	public var onFocusOut(default, null) = new Event<Void->Void>();
 	public var onFullscreen(default, null) = new Event<Void->Void>();
 	public var onHide(default, null) = new Event<Void->Void>();
+
+	/**
+		Fired when the user presses a key down when this window has focus.
+	**/
 	public var onKeyDown(default, null) = new Event<KeyCode->KeyModifier->Void>();
+
+	/**
+		Fired when the user releases a key that was down.
+	**/
 	public var onKeyUp(default, null) = new Event<KeyCode->KeyModifier->Void>();
+
 	public var onLeave(default, null) = new Event<Void->Void>();
+
+	/**
+		Fired when the window is maximized.
+	**/
 	public var onMaximize(default, null) = new Event<Void->Void>();
+
+	/**
+		Fired when the window is minimized.
+	**/
 	public var onMinimize(default, null) = new Event<Void->Void>();
+
+	/**
+		Fired when the user pressed a mouse button down.
+	**/
 	public var onMouseDown(default, null) = new Event<Float->Float->MouseButton->Void>();
+
+	/**
+		Fired when the mouse is moved over the window.
+	**/
 	public var onMouseMove(default, null) = new Event<Float->Float->Void>();
 	public var onMouseMoveRelative(default, null) = new Event<Float->Float->Void>();
+
+	/**
+		Fired when the user releases a mouse button that was pressed down.
+	**/
 	public var onMouseUp(default, null) = new Event<Float->Float->Int->Void>();
+
+	/**
+		Fired when the user interacts with the mouse wheel.
+	**/
 	public var onMouseWheel(default, null) = new Event<Float->Float->MouseWheelMode->Void>();
+
+	/**
+		Fired when the window is moved to a new position.
+	**/
 	public var onMove(default, null) = new Event<Float->Float->Void>();
 	public var onRender(default, null) = new Event<RenderContext->Void>();
 	public var onRenderContextLost(default, null) = new Event<Void->Void>();
 	public var onRenderContextRestored(default, null) = new Event<RenderContext->Void>();
+
+	/**
+		Fired when the window is resized with new dimensions.
+	**/
 	public var onResize(default, null) = new Event<Int->Int->Void>();
+
 	public var onRestore(default, null) = new Event<Void->Void>();
 	public var onShow(default, null) = new Event<Void->Void>();
 	public var onTextEdit(default, null) = new Event<String->Int->Int->Void>();
 	public var onTextInput(default, null) = new Event<String->Void>();
+
 	public var opacity(get, set):Float;
 	public var parameters:Dynamic;
 	public var resizable(get, set):Bool;
@@ -109,6 +161,10 @@ class Window
 	@:noCompletion private var __attributes:WindowAttributes;
 	@:noCompletion private var __backend:WindowBackend;
 	@:noCompletion private var __borderless:Bool;
+	@:noCompletion private var __borderlessFullscreen:Bool;
+	@:noCompletion private var __borderlessFullscreenBounds:Rectangle;
+	@:noCompletion private var __borderlessFullscreenPrevBorderless:Bool;
+	@:noCompletion private var __borderlessFullscreenPrevResizable:Bool;
 	@:noCompletion private var __fullscreen:Bool;
 	@:noCompletion private var __height:Int;
 	@:noCompletion private var __hidden:Bool;
@@ -117,7 +173,6 @@ class Window
 	@:noCompletion private var __resizable:Bool;
 	@:noCompletion private var __scale:Float;
 	@:noCompletion private var __title:String;
-	@:noCompletion private var __visible:Bool;
 	@:noCompletion private var __vsync:Bool;
 	@:noCompletion private var __width:Int;
 	@:noCompletion private var __x:Int;
@@ -134,6 +189,7 @@ class Window
 		untyped Object.defineProperties(p,
 			{
 				"borderless": {get: p.get_borderless, set: p.set_borderless},
+				"borderlessFullscreen": {get: p.get_borderlessFullscreen, set: p.set_borderlessFullscreen},
 				"cursor": {get: p.get_cursor, set: p.set_cursor},
 				"display": {get: p.get_display},
 				"displayMode": {get: p.get_displayMode, set: p.set_displayMode},
@@ -174,8 +230,9 @@ class Window
 		__x = 0;
 		__y = 0;
 		__title = Reflect.hasField(__attributes, "title") ? __attributes.title : "";
-		__visible = true;
+		__hidden = false;
 		__borderless = Reflect.hasField(__attributes, "borderless") ? __attributes.borderless : false;
+		__borderlessFullscreen = false;
 		__resizable = Reflect.hasField(__attributes, "resizable") ? __attributes.resizable : false;
 		__maximized = Reflect.hasField(__attributes, "maximized") ? __attributes.maximized : false;
 		__minimized = Reflect.hasField(__attributes, "minimized") ? __attributes.minimized : false;
@@ -520,6 +577,64 @@ class Window
 		return __borderless = __backend.setBorderless(value);
 	}
 
+	@:noCompletion private inline function get_borderlessFullscreen():Bool
+	{
+		return __borderlessFullscreen;
+	}
+
+	@:noCompletion private function set_borderlessFullscreen(value:Bool):Bool
+	{
+		if (value == __borderlessFullscreen) return value;
+
+		__borderlessFullscreen = value;
+
+		if (value)
+		{
+			var bounds = display.bounds;
+			__borderlessFullscreenBounds = bounds;
+			__borderlessFullscreenPrevBorderless = borderless;
+			__borderlessFullscreenPrevResizable = resizable;
+
+			resizable = false;
+			borderless = true;
+
+			move(Std.int(bounds.x), Std.int(bounds.y));
+			resize(Std.int(bounds.width), Std.int(bounds.height));
+
+			onMove.add(__borderlessFullscreen_onMove);
+			onResize.add(__borderlessFullscreen_onResize);
+		}
+		else
+		{
+			onMove.remove(__borderlessFullscreen_onMove);
+			onResize.remove(__borderlessFullscreen_onResize);
+
+			borderless = __borderlessFullscreenPrevBorderless;
+			resizable = __borderlessFullscreenPrevResizable;
+			__borderlessFullscreenBounds = null;
+		}
+
+		return value;
+	}
+
+	@:noCompletion private function __borderlessFullscreen_onMove(x:Float, y:Float):Void
+	{
+		var bounds = __borderlessFullscreenBounds;
+		if (bounds != null && (x != bounds.x || y != bounds.y))
+		{
+			move(Std.int(bounds.x), Std.int(bounds.y));
+		}
+	}
+
+	@:noCompletion private function __borderlessFullscreen_onResize(width:Int, height:Int):Void
+	{
+		var bounds = __borderlessFullscreenBounds;
+		if (bounds != null && (width != bounds.width || height != bounds.height))
+		{
+			resize(Std.int(bounds.width), Std.int(bounds.height));
+		}
+	}
+
 	@:noCompletion private inline function get_frameRate():Float
 	{
 		return __backend.getFrameRate();
@@ -687,13 +802,13 @@ class Window
 
 	@:noCompletion private inline function get_visible():Bool
 	{
-		return __visible;
+		return !__hidden;
 	}
 
 	@:noCompletion private function set_visible(value:Bool):Bool
 	{
-		__visible = __backend.setVisible(value);
-		return __visible;
+		__hidden = !__backend.setVisible(value);
+		return !__hidden;
 	}
 
 	@:noCompletion private inline function get_vsync():Bool

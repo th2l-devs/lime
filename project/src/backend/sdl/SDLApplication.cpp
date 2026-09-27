@@ -12,6 +12,19 @@
 #include "emscripten.h"
 #endif
 
+#ifdef LIME_FIX_FREEZE_WINDOW
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// timeBeginPeriod/timeEndPeriod (winmm) - WIN32_LEAN_AND_MEAN omits mmsystem.h,
+// so pull in the multimedia timer API explicitly. winmm.lib is already linked.
+#include <timeapi.h>
+#endif
+
 
 namespace lime {
 
@@ -25,6 +38,8 @@ namespace lime {
 
 
 	SDLApplication::SDLApplication () {
+
+		SDL_SetHint (SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
 
 		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK | SDL_INIT_SENSOR;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
@@ -176,6 +191,7 @@ namespace lime {
 
 				inBackground = false;
 				lastUpdate = SDL_GetTicksNS ();
+				nextUpdate = lastUpdate;
 				break;
 
 			case SDL_EVENT_CLIPBOARD_UPDATE:
@@ -217,7 +233,6 @@ namespace lime {
 				break;
 
 			case SDL_EVENT_JOYSTICK_AXIS_MOTION:
-			case SDL_EVENT_JOYSTICK_BALL_MOTION:
 			case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
 			case SDL_EVENT_JOYSTICK_BUTTON_UP:
 			case SDL_EVENT_JOYSTICK_HAT_MOTION:
@@ -344,8 +359,14 @@ namespace lime {
 
 		active = true;
 		lastUpdate = SDL_GetTicksNS ();
+		nextUpdate = lastUpdate;
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
+		// Raise the Windows timer resolution to 1ms. Without this, the WM_TIMER SDL uses to
+		// keep the window alive during the modal move/resize loop is clamped to the default
+		// ~15.6ms scheduler tick. Paired with timeEndPeriod in Quit().
+		timeBeginPeriod (1);
+
 		SDL_AddEventWatch (WindowEventWatcher, this);
 		#endif
 
@@ -483,17 +504,6 @@ namespace lime {
 					joystickEvent.index = event->jaxis.axis;
 					joystickEvent.x = event->jaxis.value / (event->jaxis.value > 0 ? 32767.0 : 32768.0);
 					joystickEvent.id = event->jaxis.which;
-
-					JoystickEvent::Dispatch (&joystickEvent);
-					break;
-
-				case SDL_EVENT_JOYSTICK_BALL_MOTION:
-
-					joystickEvent.type = JOYSTICK_TRACKBALL_MOVE;
-					joystickEvent.index = event->jball.ball;
-					joystickEvent.x = event->jball.xrel / (event->jball.xrel > 0 ? 32767.0 : 32768.0);
-					joystickEvent.y = event->jball.yrel / (event->jball.yrel > 0 ? 32767.0 : 32768.0);
-					joystickEvent.id = event->jball.which;
 
 					JoystickEvent::Dispatch (&joystickEvent);
 					break;
@@ -824,9 +834,11 @@ namespace lime {
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
 		SDL_RemoveEventWatch (WindowEventWatcher, this);
+		timeEndPeriod (1);
 		#endif
 
 		CloseSensors ();
+		SDL_QuitSubSystem (initFlags);
 		SDL_Quit ();
 
 		return 0;
@@ -869,15 +881,34 @@ namespace lime {
 			Uint64 currentUpdate = SDL_GetTicksNS ();
 
 			#if !defined (IPHONE) && !defined (EMSCRIPTEN)
-			// iOS and HTML5 are paced by the display, elsewhere cap the frame rate here
-			Uint64 elapsed = currentUpdate - lastUpdate;
+			// iOS and HTML5 are paced by the display, elsewhere cap the frame rate here.
+			// Fixed schedule: nextUpdate advances one period per frame so work outside the
+			// wait (poll/dispatch/render/swap) can't drift the rate down; maxBehind caps
+			// catch-up so resuming from a stall doesn't burst frames at unlimited rate.
+			if (framePeriod > 0) {
 
-			if (elapsed < framePeriod) {
+				Uint64 maxBehind = framePeriod * 4;
 
-				System::GCEnterBlocking ();
-				SDL_DelayPrecise (framePeriod - elapsed);
-				System::GCExitBlocking ();
-				currentUpdate = SDL_GetTicksNS ();
+				nextUpdate += framePeriod;
+
+				if (currentUpdate > nextUpdate && (currentUpdate - nextUpdate) > maxBehind) {
+
+					nextUpdate = currentUpdate;
+
+				}
+
+				if (currentUpdate < nextUpdate) {
+
+					System::GCEnterBlocking ();
+					SDL_DelayPrecise (nextUpdate - currentUpdate);
+					System::GCExitBlocking ();
+					currentUpdate = SDL_GetTicksNS ();
+
+				}
+
+			} else {
+
+				nextUpdate = currentUpdate;
 
 			}
 			#endif
@@ -908,7 +939,9 @@ namespace lime {
 	// While the user drags or resizes a window on Windows, the OS runs a modal
 	// message loop inside SDL_PollEvent, so Update () never returns and the
 	// application freezes. SDL still reports window events through event
-	// watchers during that loop, so keep updating and rendering from here.
+	// watchers during that loop - including a periodic SDL_EVENT_WINDOW_EXPOSED
+	// driven by SDL's own modal loop timer, which also covers a stationary hold -
+	// so keep updating and rendering from here.
 	bool SDLCALL SDLApplication::WindowEventWatcher (void* userdata, SDL_Event* event) {
 
 		SDLApplication* application = (SDLApplication*)userdata;
@@ -944,6 +977,7 @@ namespace lime {
 		application->ProcessWindowEvent (event);
 		application->lastWatchedEventTimestamp = event->window.timestamp;
 		application->RenderFrame (currentUpdate);
+		application->nextUpdate = currentUpdate;
 
 		// The return value of an event watcher is ignored, HandleEvent skips
 		// the queued copy of this event using lastWatchedEventTimestamp

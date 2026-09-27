@@ -19,6 +19,12 @@
 #include <list>
 #include <map>
 #include <system/ValuePointer.h>
+#include <utils/Resource.h>
+#include <media/AudioBuffer.h>
+#include <media/containers/OGG.h>
+#include <media/containers/WAV.h>
+#include <string>
+#include <math.h>
 
 
 namespace lime {
@@ -146,7 +152,12 @@ namespace lime {
 
 	}
 
-
+	/*This has been removed after updating to openal 1.20.0+ since the cleanup functions involved
+	* lead to deadlocking. See https://github.com/openfl/lime/issues/1803 for more info.
+	* Developers should use lime.system.System.exit() instead of Sys.exit() to clean up any system
+	* resources
+	*/
+	/*
 	void lime_al_atexit () {
 
 		ALCcontext* alcContext = alcGetCurrentContext ();
@@ -167,7 +178,7 @@ namespace lime {
 		}
 
 	}
-
+	*/
 
 	void lime_al_auxf (value aux, int param, float value) {
 
@@ -1207,6 +1218,122 @@ namespace lime {
 			return 0;
 
 		}
+
+	}
+
+
+	value lime_audio_load_al_native (value path, value envelopeRate) {
+
+		std::string file (val_string (path));
+		int rate = val_int (envelopeRate);
+
+		AudioBuffer audioBuffer = AudioBuffer (alloc_null ());
+		audioBuffer.data = new ArrayBufferView (alloc_null ());
+		Resource resource = Resource (file.c_str ());
+
+		bool decoded = WAV::Decode (&resource, &audioBuffer);
+
+		#ifdef LIME_OGG
+		if (!decoded) decoded = OGG::Decode (&resource, &audioBuffer);
+		#endif
+
+		unsigned char* pcm = audioBuffer.data->buffer->b;
+		int size = audioBuffer.data->buffer->length;
+		audioBuffer.data->buffer->b = 0;
+		audioBuffer.data->buffer->length = 0;
+
+		int channels = audioBuffer.channels;
+		int bits = audioBuffer.bitsPerSample;
+		int sampleRate = audioBuffer.sampleRate;
+
+		if (!decoded || !pcm || size <= 0 || channels < 1 || channels > 2 || (bits != 8 && bits != 16) || sampleRate <= 0) {
+
+			if (pcm) free (pcm);
+			return alloc_null ();
+
+		}
+
+		ALenum format;
+		if (channels == 1) format = (bits == 8) ? AL_FORMAT_MONO8 : AL_FORMAT_MONO16;
+		else format = (bits == 8) ? AL_FORMAT_STEREO8 : AL_FORMAT_STEREO16;
+
+		int bytesPerSample = bits >> 3;
+		int frameSize = bytesPerSample * channels;
+		int frames = size / frameSize;
+		int block = (rate > 0) ? sampleRate / rate : sampleRate;
+		if (block < 1) block = 1;
+		int blocks = (frames + block - 1) / block;
+
+		buffer envelope = alloc_buffer_len (blocks * 4);
+		unsigned char* env = (unsigned char*)buffer_data (envelope);
+
+		for (int bi = 0; bi < blocks; bi++) {
+
+			int start = bi * block;
+			int end = start + block;
+			if (end > frames) end = frames;
+			double leftSum = 0;
+			double rightSum = 0;
+
+			for (int f = start; f < end; f++) {
+
+				const unsigned char* at = pcm + (size_t)f * frameSize;
+				double l;
+				double r;
+
+				if (bits == 16) {
+
+					l = (short)(at[0] | (at[1] << 8)) / 32768.0;
+					r = (channels > 1) ? (short)(at[2] | (at[3] << 8)) / 32768.0 : l;
+
+				} else {
+
+					l = ((int)at[0] - 128) / 128.0;
+					r = (channels > 1) ? ((int)at[1] - 128) / 128.0 : l;
+
+				}
+
+				leftSum += l * l;
+				rightSum += r * r;
+
+			}
+
+			int count = end - start;
+			double left = count > 0 ? sqrt (leftSum / count) : 0;
+			double right = count > 0 ? sqrt (rightSum / count) : 0;
+			unsigned int lv = (unsigned int)(left * 65535.0 + 0.5);
+			unsigned int rv = (unsigned int)(right * 65535.0 + 0.5);
+			if (lv > 65535) lv = 65535;
+			if (rv > 65535) rv = 65535;
+			env[bi * 4] = (unsigned char)(lv & 0xFF);
+			env[bi * 4 + 1] = (unsigned char)(lv >> 8);
+			env[bi * 4 + 2] = (unsigned char)(rv & 0xFF);
+			env[bi * 4 + 3] = (unsigned char)(rv >> 8);
+
+		}
+
+		value alBuffer = lime_al_gen_buffer ();
+
+		if (val_is_null (alBuffer)) {
+
+			free (pcm);
+			return alloc_null ();
+
+		}
+
+		ALuint id = (ALuint)(uintptr_t)val_data (alBuffer);
+		alBufferData (id, format, pcm, size, sampleRate);
+		free (pcm);
+
+		value result = alloc_empty_object ();
+		alloc_field (result, val_id ("buffer"), alBuffer);
+		alloc_field (result, val_id ("channels"), alloc_int (channels));
+		alloc_field (result, val_id ("bitsPerSample"), alloc_int (bits));
+		alloc_field (result, val_id ("sampleRate"), alloc_int (sampleRate));
+		alloc_field (result, val_id ("byteLength"), alloc_int (size));
+		alloc_field (result, val_id ("envelopeBlock"), alloc_int (block));
+		alloc_field (result, val_id ("envelope"), buffer_val (envelope));
+		return result;
 
 	}
 
@@ -3387,12 +3514,79 @@ namespace lime {
 
 	HL_PRIM vbyte* HL_NAME(hl_alc_get_string) (HL_CFFIPointer* device, int param) {
 
-		ALCdevice* alcDevice = (ALCdevice*)device->ptr;
+		ALCdevice* alcDevice = device ? (ALCdevice*)device->ptr : 0;
 		const char* result = alcGetString (alcDevice, param);
 		int length = strlen (result);
 		char* _result = (char*)malloc (length + 1);
 		strcpy (_result, result);
 		return (vbyte*)_result;
+
+	}
+
+
+	// alcGetString (NULL, param) returns a double-null-terminated list of
+	// null-separated device name strings (ALC_ENUMERATE_ALL_EXT); split it into
+	// one array entry per device instead of returning it as a single C string.
+	value lime_alc_get_device_list (int param) {
+
+		const char* list = alcGetString (NULL, param);
+
+		if (!list) return alloc_array (0);
+
+		int count = 0;
+		const char* p = list;
+		while (*p) {
+
+			count += 1;
+			p += strlen (p) + 1;
+
+		}
+
+		value result = alloc_array (count);
+		p = list;
+
+		for (int i = 0; i < count; i++) {
+
+			val_array_set_i (result, i, alloc_string (p));
+			p += strlen (p) + 1;
+
+		}
+
+		return result;
+
+	}
+
+
+	HL_PRIM varray* HL_NAME(hl_alc_get_device_list) (int param) {
+
+		const char* list = alcGetString (NULL, param);
+
+		if (!list) return hl_alloc_array (&hlt_bytes, 0);
+
+		int count = 0;
+		const char* p = list;
+		while (*p) {
+
+			count += 1;
+			p += strlen (p) + 1;
+
+		}
+
+		varray* result = hl_alloc_array (&hlt_bytes, count);
+		vbyte** resultData = hl_aptr (result, vbyte*);
+		p = list;
+
+		for (int i = 0; i < count; i++) {
+
+			int length = strlen (p);
+			vbyte* name = (vbyte*)malloc (length + 1);
+			strcpy ((char*)name, p);
+			*resultData++ = name;
+			p += length + 1;
+
+		}
+
+		return result;
 
 	}
 
@@ -3416,7 +3610,8 @@ namespace lime {
 	value lime_alc_open_device (HxString devicename) {
 
 		ALCdevice* alcDevice = alcOpenDevice (devicename.__s);
-		atexit (lime_al_atexit);
+		//TODO: Can we work out our own cleanup for openal?
+		//atexit (lime_al_atexit);
 
 		value ptr = CFFIPointer (alcDevice, gc_alc_object);
 		alcObjects[alcDevice] = ptr;
@@ -3428,7 +3623,8 @@ namespace lime {
 	HL_PRIM HL_CFFIPointer* HL_NAME(hl_alc_open_device) (hl_vstring* devicename) {
 
 		ALCdevice* alcDevice = alcOpenDevice (devicename ? (char*)hl_to_utf8 ((const uchar*)devicename->bytes) : 0);
-		atexit (lime_al_atexit);
+		//TODO: Can we work out our own cleanup for openal?
+		//atexit (lime_al_atexit);
 
 		HL_CFFIPointer* ptr = HLCFFIPointer (alcDevice, (hl_finalizer)hl_gc_alc_object);
 		alcObjects[alcDevice] = ptr;
@@ -3718,6 +3914,7 @@ namespace lime {
 	DEFINE_PRIME3v (lime_al_filterf);
 	DEFINE_PRIME0 (lime_al_gen_aux);
 	DEFINE_PRIME0 (lime_al_gen_buffer);
+	DEFINE_PRIME2 (lime_audio_load_al_native);
 	DEFINE_PRIME1 (lime_al_gen_buffers);
 	DEFINE_PRIME0 (lime_al_gen_effect);
 	DEFINE_PRIME0 (lime_al_gen_filter);
@@ -3794,6 +3991,7 @@ namespace lime {
 	DEFINE_PRIME1 (lime_alc_get_error);
 	DEFINE_PRIME3 (lime_alc_get_integerv);
 	DEFINE_PRIME2 (lime_alc_get_string);
+	DEFINE_PRIME1 (lime_alc_get_device_list);
 	DEFINE_PRIME1 (lime_alc_make_context_current);
 	DEFINE_PRIME1 (lime_alc_open_device);
 	DEFINE_PRIME1v (lime_alc_pause_device);
@@ -3921,6 +4119,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_I32, hl_alc_get_error, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_ARR, hl_alc_get_integerv, _TCFFIPOINTER _I32 _I32);
 	DEFINE_HL_PRIM (_BYTES, hl_alc_get_string, _TCFFIPOINTER _I32);
+	DEFINE_HL_PRIM (_ARR, hl_alc_get_device_list, _I32);
 	DEFINE_HL_PRIM (_BOOL, hl_alc_make_context_current, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_TCFFIPOINTER, hl_alc_open_device, _STRING);
 	DEFINE_HL_PRIM (_VOID, hl_alc_pause_device, _TCFFIPOINTER);

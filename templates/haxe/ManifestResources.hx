@@ -7,10 +7,6 @@ import lime.utils.AssetLibrary;
 import lime.utils.AssetManifest;
 import lime.utils.Assets;
 
-#if sys
-import sys.FileSystem;
-#end
-
 #if disable_preloader_assets
 @:dox(hide) class ManifestResources {
 	public static var preloadLibraries:Array<Dynamic>;
@@ -55,9 +51,11 @@ import sys.FileSystem;
 
 		if (rootPath == null) {
 
-			#if (ios || tvos || webassembly)
+			#if (ios || tvos)
 			rootPath = "assets/";
 			#elseif android
+			rootPath = "";
+			#elseif (emscripten || webassembly)
 			rootPath = "";
 			#elseif (console || sys)
 			rootPath = lime.system.System.applicationDirectory;

@@ -25,6 +25,7 @@ class NativeAudioSource
 	private static var STREAM_NUM_BUFFERS = 3;
 	#end
 	private static var STREAM_TIMER_FREQUENCY = 100;
+	private static var STATE_TIMER_FREQUENCY = 100;
 
 	private var buffers:Array<ALBuffer>;
 	private var bufferTimeBlocks:Array<Float>;
@@ -38,9 +39,12 @@ class NativeAudioSource
 	private var playing:Bool;
 	private var position:Vector4;
 	private var samples:Int;
+	private var stateTimer:Timer;
 	private var stream:Bool;
+	private var streamExhausted:Bool;
 	private var streamTimer:Timer;
 	private var timer:Timer;
+	private var timerDeadline:Float;
 
 	public function new(parent:AudioSource)
 	{
@@ -126,7 +130,7 @@ class NativeAudioSource
 				}
 			}
 
-			dataLength = parent.buffer.data.length;
+			dataLength = parent.buffer.data != null ? parent.buffer.data.length : @:privateAccess parent.buffer.__srcByteLength;
 
 			handle = AL.createSource();
 
@@ -188,6 +192,10 @@ class NativeAudioSource
 			var time = completed ? 0 : getCurrentTime();
 
 			setCurrentTime(time);
+
+			if (stateTimer != null) stateTimer.stop();
+			stateTimer = new Timer(STATE_TIMER_FREQUENCY);
+			stateTimer.run = stateTimer_onRun;
 		}
 	}
 
@@ -201,6 +209,11 @@ class NativeAudioSource
 		if (streamTimer != null)
 		{
 			streamTimer.stop();
+		}
+
+		if (stateTimer != null)
+		{
+			stateTimer.stop();
 		}
 
 		if (timer != null)
@@ -267,6 +280,10 @@ class NativeAudioSource
 				{
 					buffers = AL.sourceUnqueueBuffers(handle, buffersProcessed);
 				}
+				else
+				{
+					streamExhausted = true;
+				}
 			}
 		}
 
@@ -327,6 +344,11 @@ class NativeAudioSource
 			streamTimer.stop();
 		}
 
+		if (stateTimer != null)
+		{
+			stateTimer.stop();
+		}
+
 		if (timer != null)
 		{
 			timer.stop();
@@ -339,6 +361,25 @@ class NativeAudioSource
 	private function streamTimer_onRun():Void
 	{
 		refillBuffers();
+		if (playing && !completed && streamExhausted && handle != null
+			&& AL.getSourcei(handle, AL.SOURCE_STATE) == AL.STOPPED
+			&& AL.getSourcei(handle, AL.BUFFERS_PROCESSED) >= AL.getSourcei(handle, AL.BUFFERS_QUEUED))
+		{
+			timer_onRun();
+		}
+	}
+
+	private function stateTimer_onRun():Void
+	{
+		if (alSourceFinished()) timer_onRun();
+	}
+
+	private function armCompletionTimer(timeRemaining:Int):Void
+	{
+		if (timeRemaining < 1) timeRemaining = 1;
+		if (timer != null) timer.stop();
+		timer = new Timer(timeRemaining);
+		timer.run = timer_onRun;
 	}
 
 	private function timer_onRun():Void
@@ -363,30 +404,33 @@ class NativeAudioSource
 	// Get & Set Methods
 	public function getCurrentTime():Int
 	{
+		return Std.int(getCurrentTimePrecise());
+	}
+
+	public function getCurrentTimePrecise():Float
+	{
 		if (completed)
 		{
 			return getLength();
 		}
 		else if (handle != null)
 		{
+			var time:Float;
+
 			if (stream)
 			{
-				var time = (Std.int(bufferTimeBlocks[0] * 1000) + Std.int(AL.getSourcef(handle, AL.SEC_OFFSET) * 1000)) - parent.offset;
-				if (time < 0) return 0;
-				return time;
+				time = (bufferTimeBlocks[0] + AL.getSourcef(handle, AL.SEC_OFFSET)) * 1000 - parent.offset;
 			}
 			else
 			{
-				var offset = AL.getSourcei(handle, AL.BYTE_OFFSET);
-				var ratio = (offset / dataLength);
-				var totalSeconds = samples / parent.buffer.sampleRate;
-
-				var time = Std.int(totalSeconds * ratio * 1000) - parent.offset;
-
-				// var time = Std.int (AL.getSourcef (handle, AL.SEC_OFFSET) * 1000) - parent.offset;
-				if (time < 0) return 0;
-				return time;
+				// SAMPLE_OFFSET reads the exact playback sample, unlike the millisecond-quantized
+				// byte-ratio math this used to do.
+				var sampleOffset = AL.getSourcei(handle, AL.SAMPLE_OFFSET);
+				time = (sampleOffset / parent.buffer.sampleRate) * 1000 - parent.offset;
 			}
+
+			if (time < 0) return 0;
+			return time;
 		}
 
 		return 0;
@@ -394,11 +438,15 @@ class NativeAudioSource
 
 	public function setCurrentTime(value:Int):Int
 	{
-		// `setCurrentTime()` has side effects and is never safe to skip.
-		/* if (value == getCurrentTime())
-		{
-			return value;
-		} */
+		setCurrentTimePrecise(value);
+		return value;
+	}
+
+	public function setCurrentTimePrecise(value:Float):Float
+	{
+		streamExhausted = false;
+
+		// Seeking has side effects and is never safe to skip, even for value == currentTime.
 
 		if (handle != null)
 		{
@@ -416,39 +464,29 @@ class NativeAudioSource
 			{
 				AL.sourceRewind(handle);
 
-				// AL.sourcef (handle, AL.SEC_OFFSET, (value + parent.offset) / 1000);
+				// Seek by sample index: sample-accurate, and always frame-aligned (a rounded raw
+				// BYTE_OFFSET can land mid-sample-frame on multi-channel formats).
+				var targetSample = Math.round((value + parent.offset) / 1000 * parent.buffer.sampleRate);
+				if (targetSample < 0) targetSample = 0;
+				if (targetSample > samples) targetSample = samples;
 
-				var secondOffset = (value + parent.offset) / 1000;
-				var totalSeconds = samples / parent.buffer.sampleRate;
-
-				if (secondOffset < 0) secondOffset = 0;
-				if (secondOffset > totalSeconds) secondOffset = totalSeconds;
-
-				var ratio = (secondOffset / totalSeconds);
-				var totalOffset = Std.int(dataLength * ratio);
-
-				AL.sourcei(handle, AL.BYTE_OFFSET, totalOffset);
+				AL.sourcei(handle, AL.SAMPLE_OFFSET, targetSample);
 				if (playing) AL.sourcePlay(handle);
 			}
 		}
 
 		if (playing)
 		{
-			if (timer != null)
-			{
-				timer.stop();
-			}
-
 			var timeRemaining = Std.int((getLength() - value) / getPitch());
 
 			if (timeRemaining > 0)
 			{
 				completed = false;
-				timer = new Timer(timeRemaining);
-				timer.run = timer_onRun;
+				armCompletionTimer(timeRemaining);
 			}
 			else
 			{
+				if (timer != null) timer.stop();
 				playing = false;
 				completed = true;
 			}
@@ -493,17 +531,14 @@ class NativeAudioSource
 	{
 		if (playing && length != value)
 		{
-			if (timer != null)
+			if (alSourceFinished())
 			{
-				timer.stop();
+				if (timer != null) timer.stop();
+				timer_onRun();
 			}
-
-			var timeRemaining = Std.int((value - getCurrentTime()) / getPitch());
-
-			if (timeRemaining > 0)
+			else
 			{
-				timer = new Timer(timeRemaining);
-				timer.run = timer_onRun;
+				armCompletionTimer(Std.int((value - getCurrentTime()) / getPitch()));
 			}
 		}
 
@@ -532,21 +567,32 @@ class NativeAudioSource
 		}
 	}
 
+	private inline function alSourceFinished():Bool
+	{
+		return playing && !stream && handle != null && AL.getSourcei(handle, AL.SOURCE_STATE) == AL.STOPPED;
+	}
+
 	public function setPitch(value:Float):Float
 	{
+		if (value <= 0) value = 0.0001;
+
 		if (playing && value != getPitch())
 		{
-			if (timer != null)
+			if (alSourceFinished())
 			{
-				timer.stop();
+				if (timer != null) timer.stop();
+				timer_onRun();
 			}
-
-			var timeRemaining = Std.int((getLength() - getCurrentTime()) / value);
-
-			if (timeRemaining > 0)
+			else
 			{
-				timer = new Timer(timeRemaining);
-				timer.run = timer_onRun;
+				var timeRemaining = Std.int((getLength() - getCurrentTime()) / value);
+				if (timeRemaining < 1) timeRemaining = 1;
+
+				var newDeadline = Timer.stamp() + timeRemaining / 1000;
+				if (timer == null || Math.abs(newDeadline - timerDeadline) > 0.02)
+				{
+					armCompletionTimer(timeRemaining);
+				}
 			}
 		}
 

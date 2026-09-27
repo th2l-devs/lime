@@ -8,6 +8,7 @@ import lime.graphics.OpenGLRenderContext;
 import lime.graphics.RenderContext;
 import lime.math.Rectangle;
 import lime.media.AudioManager;
+import lime.system.CFFI;
 import lime.system.Clipboard;
 import lime.system.Display;
 import lime.system.DisplayMode;
@@ -102,13 +103,13 @@ class NativeApplication
 
 	private function advanceTimer():Void
 	{
-		#if lime_cffi
+		#if (lime_cffi && !macro)
 		if (pauseTimer > -1)
 		{
 			var offset = System.getTimer() - pauseTimer;
-			for (i in 0...Timer.sRunningTimers.length)
+			for (timer in Timer.sRunningTimers)
 			{
-				if (Timer.sRunningTimers[i] != null) Timer.sRunningTimers[i].mFireAt += offset;
+				if (timer.mRunning) timer.mFireAt += offset;
 			}
 			pauseTimer = -1;
 		}
@@ -161,6 +162,10 @@ class NativeApplication
 		#elseif lime_cffi
 		var result = NativeCFFI.lime_application_exec(handle);
 
+		#if lime_telemetry
+		lime.system.Telemetry.close();
+		#end
+
 		#if (!webassembly && !ios && !nodejs)
 		parent.onExit.dispatch(result);
 		#end
@@ -197,7 +202,15 @@ class NativeApplication
 			case UPDATE:
 				updateTimer();
 
+				#if lime_telemetry
+				lime.system.Telemetry.beginFrame(applicationEventInfo.deltaTime);
+				#end
+
 				parent.onUpdate.dispatch(applicationEventInfo.deltaTime);
+
+				#if lime_telemetry
+				lime.system.Telemetry.endUpdate();
+				#end
 
 			default:
 		}
@@ -212,7 +225,7 @@ class NativeApplication
 	{
 		for (window in parent.windows)
 		{
-			window.onDropFile.dispatch(#if hl @:privateAccess String.fromUTF8(dropEventInfo.file) #else dropEventInfo.file #end);
+			window.onDropFile.dispatch(CFFI.stringValue(dropEventInfo.file));
 		}
 	}
 
@@ -251,10 +264,6 @@ class NativeApplication
 			case HAT_MOVE:
 				var joystick = Joystick.devices.get(joystickEventInfo.id);
 				if (joystick != null) joystick.onHatMove.dispatch(joystickEventInfo.index, joystickEventInfo.eventValue);
-
-			case TRACKBALL_MOVE:
-				var joystick = Joystick.devices.get(joystickEventInfo.id);
-				if (joystick != null) joystick.onTrackballMove.dispatch(joystickEventInfo.index, joystickEventInfo.x, joystickEventInfo.y);
 
 			case BUTTON_DOWN:
 				var joystick = Joystick.devices.get(joystickEventInfo.id);
@@ -314,7 +323,7 @@ class NativeApplication
 			}
 
 			#if rpi
-			if (keyCode == ESCAPE && modifier == KeyModifier.NONE && type == KEY_UP && !window.onKeyUp.canceled)
+			if (keyCode == ESCAPE && modifier.ctrlKey && type == KEY_DOWN)
 			{
 				System.exit(0);
 			}
@@ -406,6 +415,10 @@ class NativeApplication
 	{
 		// TODO: Allow windows to render independently
 
+		#if lime_telemetry
+		var telemetryDone = false;
+		#end
+
 		for (window in parent.__windows)
 		{
 			if (window == null) continue;
@@ -417,13 +430,40 @@ class NativeApplication
 				case RENDER:
 					if (window.context != null)
 					{
+						#if lime_telemetry
+						// only the first window contributes a sample; the buffer swap below is
+						// deliberately outside the bracket so vsync waits stay out of cpu/gpu time
+						var telemetryThis = !telemetryDone;
+						if (telemetryThis)
+						{
+							telemetryDone = true;
+							lime.system.Telemetry.beginRender();
+						}
+						#end
+
 						window.__backend.render();
 						window.onRender.dispatch(window.context);
 
+						#if lime_telemetry
+						if (telemetryThis) lime.system.Telemetry.endRender();
+						#end
+
 						if (!window.onRender.canceled)
 						{
+							#if lime_telemetry
+							if (telemetryThis) lime.system.Telemetry.beginSwap();
+							#end
+
 							window.__backend.contextFlip();
+
+							#if lime_telemetry
+							if (telemetryThis) lime.system.Telemetry.endSwap();
+							#end
 						}
+
+						#if lime_telemetry
+						if (telemetryThis) lime.system.Telemetry.endFrame();
+						#end
 					}
 
 				case RENDER_CONTEXT_LOST:
@@ -448,10 +488,8 @@ class NativeApplication
 				case RENDER_CONTEXT_RESTORED:
 					if (window.__backend.useHardware)
 					{
-						// GL.context = new OpenGLRenderContext ();
-						// window.context.gl = GL.context;
-
-						window.onRenderContextRestored.dispatch(window.context);
+						if (window.context == null) window.__backend.restoreContext();
+						if (window.context != null) window.onRenderContextRestored.dispatch(window.context);
 					}
 			}
 		}
@@ -476,11 +514,10 @@ class NativeApplication
 			switch (textEventInfo.type)
 			{
 				case TEXT_INPUT:
-					window.onTextInput.dispatch(#if hl @:privateAccess String.fromUTF8(textEventInfo.text) #else textEventInfo.text #end);
+					window.onTextInput.dispatch(CFFI.stringValue(textEventInfo.text));
 
 				case TEXT_EDIT:
-					window.onTextEdit.dispatch(#if hl @:privateAccess String.fromUTF8(textEventInfo.text) #else textEventInfo.text #end, textEventInfo.start,
-						textEventInfo.length);
+					window.onTextEdit.dispatch(CFFI.stringValue(textEventInfo.text), textEventInfo.start, textEventInfo.length);
 
 				default:
 			}
@@ -563,6 +600,9 @@ class NativeApplication
 					AudioManager.resume();
 
 				case WINDOW_CLOSE:
+					#if lime_telemetry
+					lime.system.Telemetry.close();
+					#end
 					window.close();
 
 				case WINDOW_DEACTIVATE:
@@ -623,20 +663,17 @@ class NativeApplication
 
 	private function updateTimer():Void
 	{
-		#if lime_cffi
+		#if (lime_cffi && !macro)
 		if (Timer.sRunningTimers.length > 0)
 		{
 			var currentTime = System.getTimer();
-			var foundNull = false;
-			var timer;
+			var foundStopped = false;
 
-			for (i in 0...Timer.sRunningTimers.length)
+			for (timer in Timer.sRunningTimers)
 			{
-				timer = Timer.sRunningTimers[i];
-
-				if (timer != null)
+				if (timer.mRunning)
 				{
-					if (timer.mRunning && currentTime >= timer.mFireAt)
+					if (currentTime >= timer.mFireAt)
 					{
 						timer.mFireAt += timer.mTime;
 						timer.run();
@@ -644,15 +681,15 @@ class NativeApplication
 				}
 				else
 				{
-					foundNull = true;
+					foundStopped = true;
 				}
 			}
 
-			if (foundNull)
+			if (foundStopped)
 			{
 				Timer.sRunningTimers = Timer.sRunningTimers.filter(function(val)
 				{
-					return val != null;
+					return val.mRunning;
 				});
 			}
 		}
@@ -798,7 +835,6 @@ class NativeApplication
 {
 	var AXIS_MOVE = 0;
 	var HAT_MOVE = 1;
-	var TRACKBALL_MOVE = 2;
 	var BUTTON_DOWN = 3;
 	var BUTTON_UP = 4;
 	var CONNECT = 5;
@@ -843,7 +879,8 @@ class NativeApplication
 	public var y:Float;
 	public var clickCount:Int;
 
-	public function new(type:MouseEventType = null, windowID:Int = 0, x:Float = 0, y:Float = 0, button:Int = 0, movementX:Float = 0, movementY:Float = 0, clickCount:Int = 0)
+	public function new(type:MouseEventType = null, windowID:Int = 0, x:Float = 0, y:Float = 0, button:Int = 0, movementX:Float = 0, movementY:Float = 0,
+			clickCount:Int = 0)
 	{
 		this.type = type;
 		this.windowID = 0;
@@ -1054,6 +1091,7 @@ class NativeApplication
 	var DEVICE_ORIENTATION_CHANGE = 1;
 }
 
+@:keep
 private class OrientationChangeListener #if (android && !macro) implements JNISafety #end
 {
 	private var callback:Int->Void;

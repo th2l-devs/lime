@@ -70,6 +70,7 @@ namespace lime {
 			ApplicationEvent applicationEvent;
 			ClipboardEvent clipboardEvent;
 			Uint64 lastUpdate;
+			Uint64 nextUpdate;
 			Uint64 framePeriod;
 			SDL_Sensor* accelerometer;
 			DropEvent dropEvent;

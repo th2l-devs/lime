@@ -115,7 +115,7 @@ class AssetHelper
 			libraries[lib.name] = lib;
 		}
 
-		var assetData;
+		var assetData:Dynamic;
 
 		for (asset in project.assets)
 		{
@@ -155,8 +155,8 @@ class AssetHelper
 			}
 		}
 
-		var manifest = null;
-		var manifests = [];
+		var manifest:AssetManifest = null;
+		var manifests:Array<AssetManifest> = [];
 
 		if (!hasManifest.exists(DEFAULT_LIBRARY_NAME))
 		{
@@ -178,7 +178,7 @@ class AssetHelper
 		if (targetDirectory != null)
 		{
 			System.mkdir(targetDirectory);
-			var targetPath;
+			var targetPath:String;
 
 			for (manifest in manifests)
 			{
@@ -399,8 +399,17 @@ class AssetHelper
 		}
 	}
 
+	private static function isDotfileAsset(asset:Asset):Bool
+	{
+		var name = Path.withoutDirectory((asset.targetPath != null && asset.targetPath != "") ? asset.targetPath : asset.sourcePath);
+		return name != null && name.length > 0 && name.charAt(0) == ".";
+	}
+
 	public static function processLibraries(project:HXProject, targetDirectory:String = null):Void
 	{
+		// Drop dotfiles; aapt strips them from the APK, so a manifest entry would crash the preloader.
+		project.assets = project.assets.filter(function(asset) return !isDotfileAsset(asset));
+
 		var hasManifest = new Map<String, Bool>();
 		var libraryMap = new Map<String, Bool>();
 
@@ -409,7 +418,7 @@ class AssetHelper
 			libraryMap[library.name] = true;
 		}
 
-		var library;
+		var library:Library;
 
 		for (asset in project.assets)
 		{
@@ -435,7 +444,7 @@ class AssetHelper
 
 		var handlers = new Array<String>();
 		var hasPackedLibraries = false;
-		var type;
+		var type:String;
 
 		for (library in project.libraries)
 		{
@@ -492,7 +501,7 @@ class AssetHelper
 				}
 				catch (e:Dynamic)
 				{
-					var types = [];
+					var types:Array<String> = [];
 
 					for (library in project.libraries)
 					{
@@ -545,7 +554,9 @@ class AssetHelper
 			project.haxedefs.set("disable_preloader_assets", "1");
 		}
 
-		var manifest, embed, asset;
+		var manifest:AssetManifest;
+		var embed:Bool;
+		var asset:Asset;
 
 		for (library in project.libraries)
 		{
@@ -565,6 +576,13 @@ class AssetHelper
 					embed = false;
 
 					if (manifest.assets.length == 0 || (project.target == HTML5 && library.name == DEFAULT_LIBRARY_NAME))
+					{
+						embed = true;
+					}
+					else if ((project.target == WINDOWS || project.target == MAC || project.target == LINUX
+						|| project.target == ANDROID || project.target == IOS || project.target == TVOS)
+						&& library.embed != false
+						&& !project.haxedefs.exists("file_manifest"))
 					{
 						embed = true;
 					}
@@ -609,7 +627,10 @@ class AssetHelper
 
 	public static function processPackedLibraries(project:HXProject, targetDirectory:String = null):Void
 	{
-		var type, asset, cacheAvailable, cacheDirectory, filename;
+		var type:String;
+		var cacheAvailable:Bool;
+		var cacheDirectory:String;
+		var filename:String;
 		var output, manifest, position, assetData:Dynamic, input;
 		var embeddedLibrary = false;
 
@@ -656,7 +677,7 @@ class AssetHelper
 
 					try
 					{
-						var assetData;
+						var assetData:Dynamic;
 
 						for (asset in project.assets)
 						{

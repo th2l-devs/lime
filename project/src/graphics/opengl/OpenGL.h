@@ -73,13 +73,18 @@
 
 #elif defined (HX_WINDOWS)
 
-//#define LIME_GLES3_API
+// desktop GL on Windows resolves glGenQueries/glBeginQuery/glGetQueryObjectuiv through
+// the DYNAMIC_OGL loader below, same as HX_LINUX, so the GLES3-level API is available.
+// ANGLE is GLES2 only, so it stays off there.
+#ifndef NATIVE_TOOLKIT_SDL_ANGLE
+#define LIME_GLES3_API
+#endif
 #include <windows.h>
 #ifndef NATIVE_TOOLKIT_SDL_ANGLE
-#include <gl/GL.h>
+#include <GL/gl.h>
 #endif
 
-typedef ptrdiff_t GLsizeiptrARB;
+// typedef ptrdiff_t GLsizeiptrARB;
 #define NEED_EXTENSIONS
 #define DYNAMIC_OGL
 

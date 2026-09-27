@@ -32,10 +32,11 @@ import lime.utils.UInt8Array;
 #if !display
 import lime._internal.backend.html5.HTML5HTTPRequest;
 #end
-import js.html.CanvasElement;
-import js.html.ImageElement;
-import js.html.Image as JSImage;
 import js.Browser;
+import js.html.CanvasElement;
+import js.html.Image as JSImage;
+import js.html.ImageElement;
+import lime._internal.backend.html5.HTML5Thread;
 #elseif flash
 import flash.display.Bitmap;
 import flash.display.BitmapData;
@@ -230,6 +231,13 @@ class Image
 		{
 			#if (js && html5)
 			type = CANVAS;
+
+			#if lime_threads
+			if (HTML5Thread.current().isWorker())
+			{
+				type = DATA;
+			}
+			#end
 			#elseif flash
 			type = FLASH;
 			#else
@@ -994,7 +1002,7 @@ class Image
 
 		return promise.future;
 		#else
-		return new Future<Image>(function() return fromBytes(bytes), true);
+		return new Future(fromBytes.bind(bytes), true);
 		#end
 	}
 
@@ -1033,17 +1041,27 @@ class Image
 
 		return promise.future;
 		#else
-		var request = new HTTPRequest<Image>();
-		return request.load(path).then(function(image)
+		// load raw bytes (threaded), then decode via loadFromBytes (also threaded) -
+		// HTTPRequest<Image> used to decode inline on the byte-read callback's thread
+		var request = new HTTPRequest<Bytes>();
+		return request.load(path).then(function(bytes)
 		{
-			if (image != null)
+			if (bytes == null)
 			{
-				return Future.withValue(image);
+				return cast Future.withError("[Image] Could not load file \"" + path + "\"");
 			}
-			else
+
+			return loadFromBytes(bytes).then(function(image)
 			{
-				return cast Future.withError("");
-			}
+				if (image != null)
+				{
+					return Future.withValue(image);
+				}
+				else
+				{
+					return cast Future.withError("[Image] Could not decode file \"" + path + "\"");
+				}
+			});
 		});
 		#end
 	}
@@ -1475,6 +1493,11 @@ class Image
 		__fromBase64(Base64.encode(bytes), type, onload);
 		return true;
 		#elseif (lime_cffi && !macro)
+		if (bytes == null || bytes.length == 0)
+		{
+			return false;
+		}
+
 		var imageBuffer:ImageBuffer = null;
 
 		#if !cs
@@ -1581,7 +1604,6 @@ class Image
 
 				var data = new UInt8Array(Bytes.ofData(data.getData()));
 				var length = header.width * header.height;
-				var b, g, r, a;
 
 				for (i in 0...length)
 				{

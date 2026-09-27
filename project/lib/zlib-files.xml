@@ -1,28 +1,98 @@
 <xml>
 
+	<!--
+		zlib-ng 2.2.4 (zlib-compat mode) — drop-in replacement for stock zlib.
+		SIMD-accelerated inflate/CRC speeds up all PNG decode (libpng -> zlib),
+		LZMA/gzip and lime's own Zlib paths. See project/lib/zlib/LICENSE.md.
+
+		Headers (zlib.h / zconf.h / zlib_name_mangling.h / gzread.c) were generated
+		by zlib-ng's own cmake in compat mode (ZLIB_COMPAT + WITH_GZFILEOP, AVX512
+		off) and vendored, so no configure step is needed at build time.
+
+		x86 SIMD path (runtime-CPU-dispatched via functable) is enabled for the
+		MSVC Windows build only — MSVC compiles x86 intrinsics without per-file
+		/arch flags. Other toolchains (mingw, linux, mac, android) fall back to the
+		portable generic implementation, which is still faster than stock zlib and
+		needs no per-file ISA flags. SIMD for those can be added later (gcc/clang
+		need -msse2/-mssse3/-msse4.2/-mpclmul/-mavx2 per file).
+	-->
 	<files id="native-toolkit-zlib">
 
 		<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/zlib/" />
 
-		<!-- Use unistd.h anywhere except Win32. -->
-		<compilerflag value="-DZ_HAVE_UNISTD_H" unless="windows" />
-		<compilerflag value="-DZ_HAVE_UNISTD_H" if="windows HXCPP_X86_64" unless="mingw" />
+		<compilerflag value="-DZLIB_COMPAT" />
+		<compilerflag value="-DWITH_GZFILEOP" />
+		<compilerflag value="-DNO_FSEEKO" />
 
+		<!-- core (portable, compiled everywhere) -->
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/adler32.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/compress.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/cpu_features.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/crc32.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/crc32_braid_comb.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate.c" />
-		<file name="${NATIVE_TOOLKIT_PATH}/zlib/gzclose.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate_fast.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate_huff.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate_medium.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate_quick.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate_rle.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate_slow.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/deflate_stored.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/functable.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/gzlib.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/gzread.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/gzwrite.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/infback.c" />
-		<file name="${NATIVE_TOOLKIT_PATH}/zlib/inffast.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/inflate.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/inftrees.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/insert_string.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/insert_string_roll.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/trees.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/uncompr.c" />
 		<file name="${NATIVE_TOOLKIT_PATH}/zlib/zutil.c" />
+
+		<!-- generic (portable) arch implementations -->
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/generic/adler32_c.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/generic/adler32_fold_c.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/generic/chunkset_c.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/generic/compare256_c.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/generic/crc32_braid_c.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/generic/crc32_fold_c.c" />
+		<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/generic/slide_hash_c.c" />
+
+		<!--
+			x86 SIMD — MSVC Windows only. functable picks these at runtime when the
+			CPU supports them, so it stays safe on older CPUs. MSVC accepts SSE/AVX2
+			intrinsics without /arch flags; the whole group sees the X86_* feature
+			macros so functable registers the accelerated variants.
+		-->
+		<section if="windows" unless="mingw">
+
+			<compilerflag value="-DX86_FEATURES" />
+			<compilerflag value="-DX86_HAVE_XSAVE_INTRIN" />
+			<compilerflag value="-DX86_SSE2" />
+			<compilerflag value="-DX86_SSSE3" />
+			<compilerflag value="-DX86_SSE42" />
+			<compilerflag value="-DX86_PCLMULQDQ_CRC" />
+			<compilerflag value="-DX86_AVX2" />
+			<compilerflag value="-DHAVE_BUILTIN_ASSUME_ALIGNED" />
+			<compilerflag value="-D_CRT_SECURE_NO_DEPRECATE" />
+			<compilerflag value="-D_CRT_NONSTDC_NO_DEPRECATE" />
+
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/x86_features.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/adler32_ssse3.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/adler32_sse42.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/adler32_avx2.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/chunkset_sse2.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/chunkset_ssse3.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/chunkset_avx2.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/compare256_sse2.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/compare256_avx2.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/crc32_pclmulqdq.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/slide_hash_sse2.c" />
+			<file name="${NATIVE_TOOLKIT_PATH}/zlib/arch/x86/slide_hash_avx2.c" />
+
+		</section>
 
 	</files>
 

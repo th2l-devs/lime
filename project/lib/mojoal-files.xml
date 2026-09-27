@@ -1,0 +1,16 @@
+<xml>
+
+	<files id="native-toolkit-mojoal">
+
+		<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/custom/sdl/include/" />
+		<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/" />
+
+		<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/mojoal/" />
+		<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/mojoal/AL/" />
+		<compilerflag value="-DAL_LIBTYPE_STATIC" />
+
+		<file name="${NATIVE_TOOLKIT_PATH}/mojoal/mojoal.c" />
+
+	</files>
+
+</xml>

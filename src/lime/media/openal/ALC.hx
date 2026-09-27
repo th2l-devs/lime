@@ -2,6 +2,7 @@ package lime.media.openal;
 
 #if (!lime_doc_gen || lime_openal)
 import lime._internal.backend.native.NativeCFFI;
+import lime.system.CFFI;
 import lime.system.CFFIPointer;
 
 #if !lime_debug
@@ -83,12 +84,13 @@ class ALC
 
 	public static function getContextsDevice(context:ALContext):ALDevice
 	{
-		#if (lime_cffi && lime_openal && !macro) #if !hl var handle:Dynamic = NativeCFFI.lime_alc_get_contexts_device(context);
+		#if (lime_cffi && lime_openal && !macro)
+		var handle:Dynamic = NativeCFFI.lime_alc_get_contexts_device(context);
 
 		if (handle != null)
 		{
 			return new ALDevice(handle);
-		} #else #end
+		}
 		#end
 
 		return null;
@@ -152,12 +154,36 @@ class ALC
 	{
 		#if (lime_cffi && lime_openal && !macro)
 		var result = NativeCFFI.lime_alc_get_string(device, param);
-		#if hl
-		var result = @:privateAccess String.fromUTF8(result);
-		#end
-		return result;
+		return CFFI.stringValue(result);
 		#else
 		return null;
+		#end
+	}
+
+	/**
+		Enumerates the available audio output devices.
+		@param	all		If `true`, uses `ALC_ENUMERATE_ALL_EXT` (`ALL_DEVICES_SPECIFIER`) for the fuller
+						OS-level device list where supported; otherwise the basic OpenAL device list
+						(`DEVICE_SPECIFIER`).
+		@return	The device names, suitable for passing to `openDevice()`. Empty if enumeration isn't
+				supported.
+	**/
+	public static function getDeviceList(all:Bool = true):Array<String>
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		var param = all ? ALL_DEVICES_SPECIFIER : DEVICE_SPECIFIER;
+		var result = NativeCFFI.lime_alc_get_device_list(param);
+		#if hl
+		if (result == null) return [];
+		var _result = [];
+		for (i in 0...result.length)
+			_result[i] = @:privateAccess String.fromUTF8(result[i]);
+		return _result;
+		#else
+		return result == null ? [] : result;
+		#end
+		#else
+		return [];
 		#end
 	}
 

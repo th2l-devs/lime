@@ -13,6 +13,52 @@
 #endif
 
 
+// Desktop GL targets that negotiate an explicit context version. Windows and Linux both reach GL
+// through the same dynamic extension loader (DYNAMIC_OGL, see graphics/opengl/OpenGL.h) and both
+// expose compatibility profiles above 2.1, so the same negotiation applies to each.
+//
+// Deliberately excluded:
+//   ANGLE and Raspberry Pi already request a GLES context a few lines below, and would fight
+//   with this one.
+//   macOS caps its compatibility profile at 2.1 - anything higher is core-only there, which the
+//   renderer cannot use (see LIME_GL_CONTEXT_PROFILE) - so negotiation could only ever fail
+//   through every rung and land back on the default it starts from.
+#if (defined (HX_WINDOWS) || defined (HX_LINUX)) && !defined (NATIVE_TOOLKIT_SDL_ANGLE) && !defined (RASPBERRYPI)
+#define LIME_GL_NEGOTIATE_CONTEXT 1
+#endif
+
+
+#ifdef LIME_GL_NEGOTIATE_CONTEXT
+
+// The GL context desktop Windows and Linux ask for. Each of these may be overridden at build
+// time, but read the caveats first - they are not independent knobs.
+//
+// LIME_GL_CONTEXT_PROFILE defaults to compatibility rather than core on purpose. Core profile
+// removes the default vertex array object (VAO 0), so a draw call with no VAO bound is invalid,
+// and it drops support for GLSL 1.10/1.20. OpenFL's renderer depends on both of those: it never
+// calls glGenVertexArrays/glBindVertexArray anywhere, and all of its shaders are unversioned
+// GLSL 1.10 written with `attribute`/`varying`. Requesting core today produces a context in
+// which every draw call and every shader compile fails on a driver that enforces the profile
+// strictly - and appears to work on one that does not, which is worse. Switching to core is a
+// renderer migration, not a context flag.
+//
+// LIME_GL_CONTEXT_VERSION_* is only the first version tried. SDLWindow negotiates downward if the
+// driver refuses, so raising it is safe and lowering it only skips attempts.
+#ifndef LIME_GL_CONTEXT_PROFILE
+#define LIME_GL_CONTEXT_PROFILE SDL_GL_CONTEXT_PROFILE_COMPATIBILITY
+#endif
+
+#ifndef LIME_GL_CONTEXT_VERSION_MAJOR
+#define LIME_GL_CONTEXT_VERSION_MAJOR 4
+#endif
+
+#ifndef LIME_GL_CONTEXT_VERSION_MINOR
+#define LIME_GL_CONTEXT_VERSION_MINOR 5
+#endif
+
+#endif
+
+
 namespace lime {
 
 
@@ -110,6 +156,19 @@ namespace lime {
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
+			#endif
+
+			#ifdef LIME_GL_NEGOTIATE_CONTEXT
+			// Ask for a specific GL version instead of accepting whatever the driver hands back.
+			// Without this, entry points gated on 4.x - glBufferStorage, direct state access,
+			// glTextureBarrier, glMultiDraw*Indirect - may resolve to null with nothing to
+			// explain why. LIME_GL_CONTEXT_VERSION_* is negotiated down at context creation
+			// below, so this is the version to try first, not a requirement.
+			//
+			// Compatibility, not core, and deliberately so: see LIME_GL_CONTEXT_PROFILE above.
+			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, LIME_GL_CONTEXT_PROFILE);
+			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, LIME_GL_CONTEXT_VERSION_MAJOR);
+			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, LIME_GL_CONTEXT_VERSION_MINOR);
 			#endif
 
 			#if defined (RASPBERRYPI)
@@ -212,6 +271,39 @@ namespace lime {
 			}
 			#endif
 
+			#ifdef LIME_GL_NEGOTIATE_CONTEXT
+			if (!context) {
+
+				// Negotiate downward rather than failing outright. The version and profile
+				// attributes are consumed at context creation, not at window creation, so the
+				// window built above stays valid and only the context needs retrying.
+				static const int fallbackVersions[][2] = { { 4, 1 }, { 3, 3 } };
+
+				for (int i = 0; !context && i < 2; i++) {
+
+					SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, LIME_GL_CONTEXT_PROFILE);
+					SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, fallbackVersions[i][0]);
+					SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, fallbackVersions[i][1]);
+
+					context = SDL_GL_CreateContext (sdlWindow);
+
+				}
+
+				if (!context) {
+
+					// SDL's own defaults: no profile, 2.1 - the worst case is exactly the
+					// behavior from before any version was pinned.
+					SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, 0);
+					SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+					SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 1);
+
+					context = SDL_GL_CreateContext (sdlWindow);
+
+				}
+
+			}
+			#endif
+
 			if (context && SDL_GL_MakeCurrent (sdlWindow, context)) {
 
 				SDL_GL_SetSwapInterval ((flags & WINDOW_FLAG_VSYNC) ? 1 : 0);
@@ -237,6 +329,19 @@ namespace lime {
 					context = 0;
 
 				}
+
+				#ifdef LIME_GL_NEGOTIATE_CONTEXT
+				if (context && version < LIME_GL_CONTEXT_VERSION_MAJOR) {
+
+					// The negotiation above settled for less than was asked for. Say so once,
+					// rather than leaving version-gated entry points to fail later with no
+					// explanation. The version is also readable from Haxe as `GL.version`.
+					printf ("Requested OpenGL %d.%d, got %s. Features gated on OpenGL %d.x are unavailable.\n",
+						LIME_GL_CONTEXT_VERSION_MAJOR, LIME_GL_CONTEXT_VERSION_MINOR,
+						(const char*)glGetString (GL_VERSION), LIME_GL_CONTEXT_VERSION_MAJOR);
+
+				}
+				#endif
 
 				#elif defined(IPHONE) || defined(APPLETV)
 
@@ -842,7 +947,14 @@ namespace lime {
 
 	bool SDLWindow::SetFullscreen (bool fullscreen) {
 
-		SDL_SetWindowFullscreen (sdlWindow, fullscreen);
+		if (!SDL_SetWindowFullscreen (sdlWindow, fullscreen)) {
+
+			// report what the window actually ended up as, not what was requested -
+			// a failed call here previously still reported success to Haxe
+			printf ("Could not set fullscreen: %s.\n", SDL_GetError ());
+			return (SDL_GetWindowFlags (sdlWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+
+		}
 
 		return fullscreen;
 
