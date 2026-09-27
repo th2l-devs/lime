@@ -178,9 +178,15 @@ namespace lime {
 			SDL_SetHint (SDL_HINT_RENDER_DRIVER, "opengles2");
 			#endif
 
-			#if defined (IPHONE) || defined (APPLETV) || defined (ANDROID)
+			#if defined (IPHONE) || defined (APPLETV)
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
+			#elif defined (ANDROID)
+			// Same as SDL2: OpenGL ES 2.0. An ES 3 context lets glGenerateMipmap build mip
+			// chains for NPOT textures too, which noticeably raises memory use on phones.
+			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
 			#endif
 
@@ -261,7 +267,7 @@ namespace lime {
 
 			context = SDL_GL_CreateContext (sdlWindow);
 
-			#if defined (IPHONE) || defined (APPLETV) || defined (ANDROID)
+			#if defined (IPHONE) || defined (APPLETV)
 			if (!context) {
 
 				// Fall back to OpenGL ES 2 on older devices
