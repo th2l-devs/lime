@@ -689,6 +689,8 @@
  */
 #if defined(SDL_PLATFORM_WIN32)
 # define SDL_PROCESS_WINDOWS 1   /**< Windows process management */
+#elif (defined(SDL_PLATFORM_ANDROID) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 28)) || defined(SDL_PLATFORM_IOS) || defined(SDL_PLATFORM_TVOS)
+# define SDL_PROCESS_DUMMY 1     /**< posix_spawn needs Android API 28+, and is not allowed on iOS/tvOS */
 #else
 # define SDL_PROCESS_POSIX 1     /**< POSIX process management */
 #endif
