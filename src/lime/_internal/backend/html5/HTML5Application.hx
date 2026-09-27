@@ -218,17 +218,17 @@ class HTML5Application
 			case 175:
 				return KeyCode.VOLUME_UP;
 			case 176:
-				return KeyCode.AUDIO_NEXT;
+				return KeyCode.MEDIA_NEXT_TRACK;
 			case 177:
-				return KeyCode.AUDIO_PREVIOUS;
+				return KeyCode.MEDIA_PREVIOUS_TRACK;
 			case 178:
-				return KeyCode.AUDIO_STOP;
+				return KeyCode.MEDIA_STOP;
 			case 179:
-				return KeyCode.AUDIO_PLAY;
+				return KeyCode.MEDIA_PLAY_PAUSE;
 			case 180:
 				return KeyCode.MAIL;
 			case 181:
-				return KeyCode.AUDIO_MUTE;
+				return KeyCode.MUTE;
 			case 182:
 				return KeyCode.VOLUME_DOWN;
 			case 183:

@@ -2,7 +2,7 @@
 #define LIME_SDL_JOYSTICK_H
 
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <ui/Joystick.h>
 #include <map>
 
@@ -14,11 +14,8 @@ namespace lime {
 
 		public:
 
-			static bool Connect (int id);
-			static bool Disconnect (int id);
-			static int GetInstanceID (int deviceID);
-			static void Init ();
-			static bool IsAccelerometer (int id);
+			static bool Connect (SDL_JoystickID id);
+			static bool Disconnect (SDL_JoystickID id);
 
 	};
 

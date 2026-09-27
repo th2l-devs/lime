@@ -33,6 +33,8 @@
 	<set name="LIME_PIXMAN" value="1" />
 	<set name="LIME_PNG" value="1" />
 	<set name="LIME_SDL" value="1" />
+	<!-- Keep updating/rendering while a window is dragged or resized on Windows -->
+	<set name="LIME_FIX_FREEZE_WINDOW" value="1" if="windows" unless="lime-no-fix-freeze-window" />
 	<!-- <set name="LIME_SDL_ANGLE" value="1" if="windows" unless="static_link" /> -->
 	<set name="LIME_SDL_ANGLE" value="1" if="windows LIME_SDL_ANGLE" unless="static_link" />
 	<set name="LIME_SDL_ANGLE" value="1" if="windows angle" unless="static_link" />
@@ -53,7 +55,6 @@
 	<set name="NATIVE_TOOLKIT_HAVE_PNG" value="1" if="LIME_PNG" />
 	<set name="NATIVE_TOOLKIT_HAVE_SDL" value="1" if="LIME_SDL" />
 
-	<set name="NATIVE_TOOLKIT_SDL_STATIC" value="1" />
 	<set name="NATIVE_TOOLKIT_SDL_ANGLE" value="1" if="LIME_SDL_ANGLE" />
 
 	<files id="lime">
@@ -214,25 +215,19 @@
 			<section if="emscripten">
 
 				<compilerflag value="-s" />
-				<compilerflag value="USE_SDL=2" />
+				<compilerflag value="USE_SDL=3" />
 
 			</section>
 
 			<section unless="emscripten">
 
+				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/custom/sdl/include/" />
 				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/" />
-				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/configs/default/" unless="windows || mac || linux || rpi" />
-				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/configs/linux/" if="linux" unless="rpi" />
-				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/configs/windows/" if="windows" unless="winrt" />
-				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/configs/mac/" if="mac" />
-				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/configs/rpi/" if="rpi" />
-				<compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl/include/configs/winrt/" if="winrt" />
-
-				<compilerflag value="-DHAVE_LIBC" />
 
 			</section>
 
 			<compilerflag value="-DLIME_SDL" />
+			<compilerflag value="-DLIME_FIX_FREEZE_WINDOW" if="LIME_FIX_FREEZE_WINDOW" />
 			<compilerflag value="-DNATIVE_TOOLKIT_SDL_ANGLE" if="NATIVE_TOOLKIT_SDL_ANGLE" />
 			<compilerflag value="-D__IPHONEOS__" if="ios || tvos" />
 			<compilerflag value="-D__APPLETVOS__" if="tvos" />
@@ -341,7 +336,7 @@
 	<include name="lib/openal-files.xml" />
 	<include name="lib/pixman-files.xml" />
 	<include name="lib/png/files.xml" />
-	<include name="lib/sdl/files.xml" />
+	<include name="lib/sdl-files.xml" />
 	<include name="lib/tinyfiledialogs/files.xml" />
 	<include name="lib/vorbis/files.xml" />
 	<include name="lib/vpx/files.xml" />
@@ -406,6 +401,10 @@
 				<lib name="shell32.lib" />
 				<lib name="comdlg32.lib" />
 				<lib name="setupapi.lib" />
+				<lib name="uuid.lib" />
+				<lib name="hid.lib" />
+				<lib name="cfgmgr32.lib" />
+				<lib name="dxguid.lib" />
 				<lib name="avrt.lib" if ="LIME_OPENALSOFT"/>
 
 				<lib name="usp10.lib" if="LIME_HARFBUZZ" />
@@ -429,6 +428,8 @@
 
 				<lib name="-lpthread" />
 				<lib name="-lrt" />
+				<lib name="-ldl" />
+				<lib name="-lm" />
 
 				<lib name="-lgc" if="LIME_NEKO" />
 				<lib name="-lm" if="LIME_NEKO" />
@@ -454,6 +455,15 @@
 				<vflag name="-framework" value="AppKit" />
 				<vflag name="-framework" value="OpenAL" />
 				<vflag name="-framework" value="SystemConfiguration" />
+				<vflag name="-framework" value="AVFoundation" />
+				<vflag name="-framework" value="CoreBluetooth" />
+				<vflag name="-framework" value="CoreHaptics" />
+				<vflag name="-framework" value="CoreMedia" />
+				<vflag name="-framework" value="GameController" />
+				<vflag name="-framework" value="Metal" />
+				<vflag name="-framework" value="QuartzCore" />
+				<vflag name="-framework" value="UniformTypeIdentifiers" />
+				<vflag name="-weak_framework" value="CoreHaptics" />
 
 				<lib name="/opt/local/lib/libgc.a" if="LIME_NEKO" />
 				<lib name="-lm" if="LIME_NEKO" />
@@ -473,7 +483,6 @@
 				<lib name="-lm" />
 				<lib name="-lEGL" />
 				<lib name="-lGLESv2" />
-				<lib name="-lGLESv1_CM" />
 				<lib name="-lOpenSLES" />
 
 			</section>
@@ -489,11 +498,13 @@
 				<vflag name="-framework" value="AudioUnit" />
 				<vflag name="-framework" value="OpenAL" />
 				<vflag name="-framework" value="GameController" />
-				<!-- <vflag name="-framework" value="CoreBluetooth" /> -->
+				<vflag name="-framework" value="CoreBluetooth" />
+				<vflag name="-framework" value="CoreGraphics" />
+				<vflag name="-framework" value="QuartzCore" />
+				<vflag name="-framework" value="AVFoundation" />
+				<vflag name="-framework" value="Metal" />
 
 				<lib name="-ldl" />
-				<lib name="-lEGL" />
-				<lib name="-lGLESv3" />
 
 			</section>
 
@@ -509,11 +520,16 @@
 				<vflag name="-framework" value="OpenAL" />
 				<vflag name="-framework" value="CoreMotion" />
 				<vflag name="-framework" value="CoreText" />
-				<!-- <vflag name="-framework" value="CoreBluetooth" /> -->
+				<vflag name="-framework" value="CoreBluetooth" />
+				<vflag name="-framework" value="CoreGraphics" />
+				<vflag name="-framework" value="CoreHaptics" />
+				<vflag name="-framework" value="CoreMedia" />
+				<vflag name="-framework" value="GameController" />
+				<vflag name="-framework" value="QuartzCore" />
+				<vflag name="-framework" value="AVFoundation" />
+				<vflag name="-framework" value="Metal" />
 
 				<lib name="-ldl" />
-				<lib name="-lEGL" />
-				<lib name="-lGLESv3" />
 
 			</section>
 

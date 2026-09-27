@@ -1,6 +1,28 @@
 Changelog
 =========
 
+Unreleased (SDL3)
+-----------------
+
+* Updated the native backend from SDL 2.0.12 to SDL 3 (`project/lib/sdl`, FunkinCrew/SDL 3.5.0-dev).
+* Build configuration moved to `project/lib/sdl-files.xml` and `project/lib/custom/sdl/include/SDL_build_config.h`.
+* Optional Linux dependencies (D-Bus, udev, KMS/DRM, ALSA, PulseAudio, X11 extensions) are detected at compile time.
+* Switched the OpenAL Soft and mojoAL audio backends to SDL3.
+* Updated the Android `org.libsdl.app` Java sources to match SDL3.
+* iOS now enters the app through `SDL_RunApp`.
+* Accelerometer events use the SDL3 sensor API (values are still reported in units of standard gravity).
+* Displays are still addressed by index, SDL3 display IDs are mapped internally.
+* Frame pacing uses nanosecond timers and `SDL_DelayPrecise`, a frame rate of `0` now means uncapped.
+* Mouse wheel events report whole scroll steps, matching SDL2 behaviour.
+* Text input stays enabled by default on desktop, matching SDL2 behaviour.
+* Added SDL3 key codes and scan codes (`MEDIA_*`, `APP_CONTROL_*`, `INTERNATIONAL*`, `LANG*`, ...), the SDL2 names are kept as deprecated aliases.
+* Added `LIME_FIX_FREEZE_WINDOW` (enabled on Windows, disable with `-Dlime-no-fix-freeze-window`): the app keeps updating and rendering while its window is dragged or resized (based on FunkinCrew/lime#85).
+* Fixed the hidden cursor falling through to the crosshair cursor.
+* Fixed the depth buffer size calculation when a stencil buffer is requested.
+* Fixed `FILE_HANDLE::isFile` reporting true for streams that are not backed by a `FILE*`.
+* Fixed `fopen` on macOS ignoring the requested mode.
+* WinRT (UWP) builds are no longer supported, SDL3 dropped that platform.
+
 8.1.2 (03/13/2024)
 ------------------
 

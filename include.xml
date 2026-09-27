@@ -94,13 +94,22 @@
 		<dependency path="dependencies/angle/libegl.dll" if="windows angle" unless="static_link" />
 		<dependency path="dependencies/angle/libglesv2.dll" if="windows angle" unless="static_link" />
 
-		<!-- TODO: Move to template or move all template dependencies to XML? -->
-		<!-- <dependency name="CoreBluetooth.framework" if="ios" /> -->
+		<!-- Frameworks required by SDL3 that are not part of the Xcode templates -->
+		<section if="ios">
+			<dependency name="CoreBluetooth.framework" />
+			<dependency name="CoreHaptics.framework" />
+			<dependency name="CoreMedia.framework" />
+		</section>
+
+		<section if="tvos">
+			<dependency name="CoreBluetooth.framework" />
+			<dependency name="Metal.framework" />
+		</section>
 
 		<define name="native-trace" if="flash" unless="haxe-trace || haxetrace" />
 		<define name="fdb" if="flash debug" unless="nofdb" />
 
-		<define name="MACOSX_DEPLOYMENT_TARGET" value="10.9" if="mac" unless="MACOSX_DEPLOYMENT_TARGET" />
+		<define name="MACOSX_DEPLOYMENT_TARGET" value="10.15" if="mac" unless="MACOSX_DEPLOYMENT_TARGET" />
 		<setenv name="MACOSX_DEPLOYMENT_TARGET" value="${MACOSX_DEPLOYMENT_TARGET}" if="mac" />
 
 		<section if="emscripten">

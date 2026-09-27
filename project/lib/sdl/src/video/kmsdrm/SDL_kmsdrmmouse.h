@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2020 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -19,7 +19,7 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 
-#include "../../SDL_internal.h"
+#include "SDL_internal.h"
 
 #ifndef SDL_KMSDRM_mouse_h_
 #define SDL_KMSDRM_mouse_h_
@@ -29,17 +29,25 @@
 #define MAX_CURSOR_W 512
 #define MAX_CURSOR_H 512
 
-typedef struct _KMSDRM_CursorData
+struct SDL_CursorData
 {
-    struct gbm_bo *bo;
-    uint32_t       crtc_id;
-    int            hot_x, hot_y;
-    int            w, h;
-} KMSDRM_CursorData;
+    int hot_x, hot_y;
+    int w, h;
 
-extern void KMSDRM_InitMouse(_THIS);
-extern void KMSDRM_QuitMouse(_THIS);
+    /* The buffer where we store the mouse bitmap ready to be used.
+       We get it ready and filled in CreateCursor(), and copy it
+       to a GBM BO in ShowCursor().*/
+    uint32_t *buffer;
+    size_t buffer_size;
+    size_t buffer_pitch;
 
-#endif /* SDL_KMSDRM_mouse_h_ */
+};
 
-/* vi: set ts=4 sw=4 expandtab: */
+extern void KMSDRM_InitMouse(SDL_VideoDevice *_this, SDL_VideoDisplay *display);
+extern void KMSDRM_QuitMouse(SDL_VideoDevice *_this);
+
+extern bool KMSDRM_CreateCursorBO(SDL_VideoDisplay *display);
+extern void KMSDRM_DestroyCursorBO(SDL_VideoDevice *_this, SDL_VideoDisplay *display);
+extern void KMSDRM_InitCursor(void);
+
+#endif // SDL_KMSDRM_mouse_h_

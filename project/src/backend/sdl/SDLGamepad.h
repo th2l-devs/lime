@@ -2,7 +2,7 @@
 #define LIME_SDL_GAMEPAD_H
 
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <ui/Gamepad.h>
 #include <map>
 
@@ -14,9 +14,8 @@ namespace lime {
 
 		public:
 
-			static bool Connect (int deviceID);
-			static int GetInstanceID (int deviceID);
-			static bool Disconnect (int id);
+			static bool Connect (SDL_JoystickID id);
+			static bool Disconnect (SDL_JoystickID id);
 
 	};
 

@@ -372,6 +372,7 @@ class AndroidHelper
 				"Lime",
 				"Main",
 				"GameActivity",
+				"SDL",
 				"SDLActivity",
 				"GLThread",
 				"trace",

@@ -35,6 +35,10 @@
 			<lib name="rpcrt4.lib" />
 			<lib name="dwrite.lib" />
 			<lib name="setupapi.lib" />
+			<lib name="uuid.lib" />
+			<lib name="hid.lib" />
+			<lib name="cfgmgr32.lib" />
+			<lib name="dxguid.lib" />
 
 		</section>
 
@@ -42,6 +46,8 @@
 
 			<lib name="-lpthread" />
 			<lib name="-lrt" />
+			<lib name="-ldl" />
+			<lib name="-lm" />
 
 			<lib name="-lgc" if="LIME_NEKO" />
 			<lib name="-lm" if="LIME_NEKO" />
@@ -62,6 +68,14 @@
 			<vflag name="-framework" value="ForceFeedback" />
 			<vflag name="-framework" value="Carbon" />
 			<vflag name="-framework" value="AppKit" />
+			<vflag name="-framework" value="AVFoundation" />
+			<vflag name="-framework" value="CoreBluetooth" />
+			<vflag name="-framework" value="CoreHaptics" />
+			<vflag name="-framework" value="CoreMedia" />
+			<vflag name="-framework" value="GameController" />
+			<vflag name="-framework" value="Metal" />
+			<vflag name="-framework" value="QuartzCore" />
+			<vflag name="-framework" value="UniformTypeIdentifiers" />
 			<vflag name="-framework" value="OpenAL"/>
 
 			<lib name="/opt/local/lib/libgc.a" if="LIME_NEKO" />
@@ -71,13 +85,13 @@
 
 		<section if="android">
 
-			<lib name="-Wl,--undefined=Java_org_libsdl_app_SDLActivity_nativeInit" if="LIME_SDL"/>
+			<lib name="-Wl,--undefined=JNI_OnLoad" if="LIME_SDL"/>
+			<lib name="-Wl,--undefined=Java_org_libsdl_app_SDLActivity_nativeSetupJNI" if="LIME_SDL"/>
 			<lib name="-ldl" />
 			<lib name="-llog" />
 			<lib name="-landroid" />
 			<lib name="-lEGL" />
 			<lib name="-lGLESv2" />
-			<lib name="-lGLESv1_CM" />
 			<lib name="-lOpenSLES" />
 
 		</section>

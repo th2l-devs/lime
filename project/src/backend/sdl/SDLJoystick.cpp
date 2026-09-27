@@ -4,41 +4,22 @@
 namespace lime {
 
 
-	static SDL_Joystick* accelerometer = 0;
-	static SDL_JoystickID accelerometerID = -1;
-	std::map<int, int> joystickIDs = std::map<int, int> ();
 	std::map<int, SDL_Joystick*> joysticks = std::map<int, SDL_Joystick*> ();
 
 
-	bool SDLJoystick::Connect (int deviceID) {
-
-		if (deviceID != accelerometerID) {
-
-			SDL_Joystick* joystick = SDL_JoystickOpen (deviceID);
-			int id = SDL_JoystickInstanceID (joystick);
-
-			if (joystick) {
-
-				joysticks[id] = joystick;
-				joystickIDs[deviceID] = id;
-				return true;
-
-			}
-
-		}
-
-		return false;
-
-	}
-
-
-	bool SDLJoystick::Disconnect (int id) {
+	bool SDLJoystick::Connect (SDL_JoystickID id) {
 
 		if (joysticks.find (id) != joysticks.end ()) {
 
-			SDL_Joystick* joystick = joysticks[id];
-			SDL_JoystickClose (joystick);
-			joysticks.erase (id);
+			return true;
+
+		}
+
+		SDL_Joystick* joystick = SDL_OpenJoystick (id);
+
+		if (joystick) {
+
+			joysticks[id] = joystick;
 			return true;
 
 		}
@@ -48,42 +29,38 @@ namespace lime {
 	}
 
 
-	int SDLJoystick::GetInstanceID (int deviceID) {
+	bool SDLJoystick::Disconnect (SDL_JoystickID id) {
 
-		return joystickIDs[deviceID];
+		auto it = joysticks.find (id);
 
-	}
+		if (it != joysticks.end ()) {
 
-
-	void SDLJoystick::Init () {
-
-		#if defined(IPHONE) || defined(ANDROID) || defined(TVOS)
-		for (int i = 0; i < SDL_NumJoysticks (); i++) {
-
-			if (strstr (SDL_JoystickNameForIndex (i), "Accelerometer")) {
-
-				accelerometer = SDL_JoystickOpen (i);
-				accelerometerID = SDL_JoystickInstanceID (accelerometer);
-
-			}
+			SDL_CloseJoystick (it->second);
+			joysticks.erase (it);
+			return true;
 
 		}
-		#endif
+
+		return false;
 
 	}
 
 
-	bool SDLJoystick::IsAccelerometer (int id) {
+	static SDL_Joystick* GetJoystick (int id) {
 
-		return (id == accelerometerID);
+		auto it = joysticks.find (id);
+		return it != joysticks.end () ? it->second : nullptr;
 
 	}
 
 
 	const char* Joystick::GetDeviceGUID (int id) {
 
+		SDL_Joystick* joystick = GetJoystick (id);
+		if (!joystick) return nullptr;
+
 		char* guid = new char[64];
-		SDL_JoystickGetGUIDString (SDL_JoystickGetGUID (joysticks[id]), guid, 64);
+		SDL_GUIDToString (SDL_GetJoystickGUID (joystick), guid, 64);
 		return guid;
 
 	}
@@ -91,35 +68,40 @@ namespace lime {
 
 	const char* Joystick::GetDeviceName (int id) {
 
-		return SDL_JoystickName (joysticks[id]);
+		SDL_Joystick* joystick = GetJoystick (id);
+		return joystick ? SDL_GetJoystickName (joystick) : nullptr;
 
 	}
 
 
 	int Joystick::GetNumAxes (int id) {
 
-		return SDL_JoystickNumAxes (joysticks[id]);
+		SDL_Joystick* joystick = GetJoystick (id);
+		return joystick ? SDL_GetNumJoystickAxes (joystick) : 0;
 
 	}
 
 
 	int Joystick::GetNumButtons (int id) {
 
-		return SDL_JoystickNumButtons (joysticks[id]);
+		SDL_Joystick* joystick = GetJoystick (id);
+		return joystick ? SDL_GetNumJoystickButtons (joystick) : 0;
 
 	}
 
 
 	int Joystick::GetNumHats (int id) {
 
-		return SDL_JoystickNumHats (joysticks[id]);
+		SDL_Joystick* joystick = GetJoystick (id);
+		return joystick ? SDL_GetNumJoystickHats (joystick) : 0;
 
 	}
 
 
 	int Joystick::GetNumTrackballs (int id) {
 
-		return SDL_JoystickNumBalls (joysticks[id]);
+		SDL_Joystick* joystick = GetJoystick (id);
+		return joystick ? SDL_GetNumJoystickBalls (joystick) : 0;
 
 	}
 

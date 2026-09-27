@@ -4,54 +4,45 @@
 namespace lime {
 
 
-	std::map<int, SDL_GameController*> gameControllers;
-	std::map<int, int> gameControllerIDs;
+	std::map<int, SDL_Gamepad*> gameControllers;
 
 
-	bool SDLGamepad::Connect (int deviceID) {
+	bool SDLGamepad::Connect (SDL_JoystickID id) {
 
-		if (!SDL_IsGameController (deviceID))
+		if (gameControllers.find (id) != gameControllers.end ())
+			return true;
+
+		if (!SDL_IsGamepad (id))
 			return false;
 
-		SDL_GameController *gameController = SDL_GameControllerOpen (deviceID);
+		SDL_Gamepad *gameController = SDL_OpenGamepad (id);
 		if (gameController == nullptr)
 			return false;
 
-		SDL_Joystick *joystick = SDL_GameControllerGetJoystick (gameController);
-		int id = SDL_JoystickInstanceID (joystick);
-
 		gameControllers[id] = gameController;
-		gameControllerIDs[deviceID] = id;
 
 		return true;
 
 	}
 
 
-	bool SDLGamepad::Disconnect (int id) {
+	bool SDLGamepad::Disconnect (SDL_JoystickID id) {
 
 		auto it = gameControllers.find (id);
 		if (it == gameControllers.end ())
 			return false;
 
-		SDL_GameControllerClose (it->second);
-		gameControllers.erase (id);
+		SDL_CloseGamepad (it->second);
+		gameControllers.erase (it);
 
 		return true;
-
-	}
-
-
-	int SDLGamepad::GetInstanceID (int deviceID) {
-
-		return gameControllerIDs[deviceID];
 
 	}
 
 
 	void Gamepad::AddMapping (const char* content) {
 
-		SDL_GameControllerAddMapping (content);
+		SDL_AddGamepadMapping (content);
 
 	}
 
@@ -62,12 +53,8 @@ namespace lime {
 		if (it == gameControllers.end ())
 			return nullptr;
 
-		SDL_Joystick* joystick = SDL_GameControllerGetJoystick (it->second);
-		if (joystick == nullptr)
-			return nullptr;
-
 		char* guid = new char[64];
-		SDL_JoystickGetGUIDString (SDL_JoystickGetGUID (joystick), guid, 64);
+		SDL_GUIDToString (SDL_GetGamepadGUIDForID (id), guid, 64);
 		return guid;
 
 	}
@@ -79,7 +66,7 @@ namespace lime {
 		if (it == gameControllers.end ())
 			return nullptr;
 
-		return SDL_GameControllerName (it->second);
+		return SDL_GetGamepadName (it->second);
 
 	}
 
@@ -100,7 +87,7 @@ namespace lime {
 		else if (lowFrequencyRumble > 1.0f)
 			lowFrequencyRumble = 1.0f;
 
-		SDL_GameControllerRumble (it->second, lowFrequencyRumble * 0xFFFF, highFrequencyRumble * 0xFFFF, duration);
+		SDL_RumbleGamepad (it->second, lowFrequencyRumble * 0xFFFF, highFrequencyRumble * 0xFFFF, duration);
 
 	}
 

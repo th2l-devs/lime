@@ -2,7 +2,7 @@
 #define LIME_SDL_APPLICATION_H
 
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <app/Application.h>
 #include <app/ApplicationEvent.h>
 #include <graphics/RenderEvent.h>
@@ -51,7 +51,14 @@ namespace lime {
 			void ProcessTextEvent (SDL_Event* event);
 			void ProcessTouchEvent (SDL_Event* event);
 			void ProcessWindowEvent (SDL_Event* event);
-			int WaitEvent (SDL_Event* event);
+			void InitSensors ();
+			void CloseSensors ();
+			void RenderFrame (Uint64 currentUpdate);
+
+			#ifdef LIME_FIX_FREEZE_WINDOW
+			static bool SDLCALL WindowEventWatcher (void* userdata, SDL_Event* event);
+			Uint64 lastWatchedEventTimestamp;
+			#endif
 
 			static void UpdateFrame ();
 			static void UpdateFrame (void*);
@@ -59,13 +66,12 @@ namespace lime {
 			static SDLApplication* currentApplication;
 
 			bool active;
+			SDL_InitFlags initFlags;
 			ApplicationEvent applicationEvent;
 			ClipboardEvent clipboardEvent;
-			Uint64 freq;
-			Uint64 currentUpdate;
 			Uint64 lastUpdate;
-			Uint64 nextUpdate;
-			double framePeriod;
+			Uint64 framePeriod;
+			SDL_Sensor* accelerometer;
 			DropEvent dropEvent;
 			GamepadEvent gamepadEvent;
 			JoystickEvent joystickEvent;
