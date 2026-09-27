@@ -16,7 +16,7 @@ Unreleased (SDL3)
 * Mouse wheel events report whole scroll steps, matching SDL2 behaviour.
 * Text input stays enabled by default on desktop, matching SDL2 behaviour.
 * Added SDL3 key codes and scan codes (`MEDIA_*`, `APP_CONTROL_*`, `INTERNATIONAL*`, `LANG*`, ...), the SDL2 names are kept as deprecated aliases.
-* `LIME_FIX_FREEZE_WINDOW` (Windows, disable with `-Dlime-no-fix-freeze-window`) now relies on SDL3's own modal loop timer: an event watch keeps updating and rendering while the window is dragged, resized or held, without dispatching window events twice (the manual `SetTimer`/message hook from the SDL2 version is no longer needed).
+* `LIME_FIX_FREEZE_WINDOW` (Windows, disable with `-Dlime-no-fix-freeze-window`): the app keeps updating and rendering while its window is dragged, resized or held with the mouse. An event watch renders on every window event (FunkinCrew/lime#85) and a modal-loop timer, installed through `SDL_SetWindowsMessageHook`, keeps frames coming during a stationary hold; window events are not dispatched twice.
 * Fixed the hidden cursor falling through to the crosshair cursor.
 * Fixed the depth buffer size calculation when a stencil buffer is requested.
 * Fixed `FILE_HANDLE::isFile` reporting true for streams that are not backed by a `FILE*`.

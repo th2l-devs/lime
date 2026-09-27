@@ -12,7 +12,7 @@
 #include "emscripten.h"
 #endif
 
-#ifdef LIME_FIX_FREEZE_WINDOW
+#if defined (LIME_FIX_FREEZE_WINDOW) && defined (HX_WINDOWS)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -61,6 +61,7 @@ namespace lime {
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
 		lastWatchedEventTimestamp = 0;
+		modalTimerActive = false;
 		#endif
 
 		framePeriod = (Uint64)(SDL_NS_PER_SECOND / 60);
@@ -365,7 +366,14 @@ namespace lime {
 		// Raise the Windows timer resolution to 1ms. Without this, the WM_TIMER SDL uses to
 		// keep the window alive during the modal move/resize loop is clamped to the default
 		// ~15.6ms scheduler tick. Paired with timeEndPeriod in Quit().
+		#ifdef HX_WINDOWS
 		timeBeginPeriod (1);
+
+		// Keep rendering during the modal move/size/menu loop, including a stationary
+		// hold which produces no window events, by ticking our own TIMERPROC for its
+		// duration (SDL3 forwards WM_ENTERSIZEMOVE and every modal-loop message here).
+		SDL_SetWindowsMessageHook ((SDL_WindowsMessageHook)WindowsMessageHook, this);
+		#endif
 
 		SDL_AddEventWatch (WindowEventWatcher, this);
 		#endif
@@ -834,7 +842,10 @@ namespace lime {
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
 		SDL_RemoveEventWatch (WindowEventWatcher, this);
+		#ifdef HX_WINDOWS
+		SDL_SetWindowsMessageHook (NULL, NULL);
 		timeEndPeriod (1);
+		#endif
 		#endif
 
 		CloseSensors ();
@@ -939,9 +950,7 @@ namespace lime {
 	// While the user drags or resizes a window on Windows, the OS runs a modal
 	// message loop inside SDL_PollEvent, so Update () never returns and the
 	// application freezes. SDL still reports window events through event
-	// watchers during that loop - including a periodic SDL_EVENT_WINDOW_EXPOSED
-	// driven by SDL's own modal loop timer, which also covers a stationary hold -
-	// so keep updating and rendering from here.
+	// watchers during that loop, so dispatch them and render from here.
 	bool SDLCALL SDLApplication::WindowEventWatcher (void* userdata, SDL_Event* event) {
 
 		SDLApplication* application = (SDLApplication*)userdata;
@@ -949,6 +958,12 @@ namespace lime {
 		switch (event->type) {
 
 			case SDL_EVENT_WINDOW_EXPOSED:
+
+				// SDL's own modal loop timer reports EXPOSED with data1 == 1. Our timer
+				// already renders during the modal loop, so don't render twice.
+				if (application->modalTimerActive && event->window.data1 == 1) return true;
+				break;
+
 			case SDL_EVENT_WINDOW_MOVED:
 			case SDL_EVENT_WINDOW_RESIZED:
 				break;
@@ -966,14 +981,6 @@ namespace lime {
 
 		Uint64 currentUpdate = SDL_GetTicksNS ();
 
-		// Only step in when the main loop is overdue, otherwise Update () will
-		// handle the event normally and frame pacing is left untouched
-		if (currentUpdate - application->lastUpdate < application->framePeriod) {
-
-			return true;
-
-		}
-
 		application->ProcessWindowEvent (event);
 		application->lastWatchedEventTimestamp = event->window.timestamp;
 		application->RenderFrame (currentUpdate);
@@ -984,6 +991,61 @@ namespace lime {
 		return true;
 
 	}
+
+
+	#ifdef HX_WINDOWS
+
+	// Arbitrary, unlikely-to-collide timer id for the modal-loop render timer.
+	static const UINT_PTR LIME_MODAL_TIMER_ID = 0x4C494D45; // 'LIME'
+
+	// Called directly by DispatchMessage in the modal loop, so it works even with a subclassed WndProc.
+	void __stdcall SDLApplication::ModalRenderTimerProc (void* hWnd, unsigned int message, uintptr_t idTimer, unsigned long dwTime) {
+
+		SDLApplication* application = currentApplication;
+
+		if (idTimer == LIME_MODAL_TIMER_ID && application && application->active && !inBackground) {
+
+			Uint64 currentUpdate = SDL_GetTicksNS ();
+			application->RenderFrame (currentUpdate);
+			application->nextUpdate = currentUpdate;
+
+		}
+
+	}
+
+
+	bool SDLCALL SDLApplication::WindowsMessageHook (void* userdata, void* msgPtr) {
+
+		SDLApplication* application = (SDLApplication*)userdata;
+		MSG* msg = (MSG*)msgPtr;
+
+		switch (msg->message) {
+
+			case WM_ENTERSIZEMOVE:
+			case WM_ENTERMENULOOP:
+
+				if (SetTimer (msg->hwnd, LIME_MODAL_TIMER_ID, USER_TIMER_MINIMUM, (TIMERPROC)&SDLApplication::ModalRenderTimerProc)) {
+
+					application->modalTimerActive = true;
+
+				}
+				break;
+
+			case WM_EXITSIZEMOVE:
+			case WM_EXITMENULOOP:
+
+				KillTimer (msg->hwnd, LIME_MODAL_TIMER_ID);
+				application->modalTimerActive = false;
+				break;
+
+		}
+
+		// Always let SDL process the message as usual
+		return true;
+
+	}
+
+	#endif
 
 	#endif
 
