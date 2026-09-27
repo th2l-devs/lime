@@ -33,22 +33,30 @@
 #include "core/device.h"
 #include "core/logging.h"
 
+#ifdef __GNUC__
 _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Wold-style-cast\"")
+#endif
 #include "SDL3/SDL_audio.h"
 #include "SDL3/SDL_init.h"
 #include "SDL3/SDL_stdinc.h"
+#ifdef __GNUC__
 _Pragma("GCC diagnostic pop")
+#endif
 
 
 namespace {
 
 using namespace std::string_view_literals;
 
+#ifdef __GNUC__
 _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Wold-style-cast\"")
+#endif
 constexpr auto DefaultPlaybackDeviceID = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+#ifdef __GNUC__
 _Pragma("GCC diagnostic pop")
+#endif
 
 
 template<typename T>

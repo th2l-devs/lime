@@ -44,7 +44,7 @@ auto RingBuffer::Create(std::size_t sz, std::size_t elem_sz, bool limit_writes) 
         power_of_two |= power_of_two>>8;
         power_of_two |= power_of_two>>16;
         if constexpr(sizeof(size_t) > sizeof(uint32_t))
-            power_of_two |= power_of_two>>32;
+            power_of_two |= (power_of_two>>16)>>16; // split so 32-bit MSVC does not warn (C4293)
     }
     ++power_of_two;
     if(power_of_two < sz || power_of_two > std::numeric_limits<std::size_t>::max()>>1
