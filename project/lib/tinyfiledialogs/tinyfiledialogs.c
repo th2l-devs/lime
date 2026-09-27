@@ -121,7 +121,7 @@ misrepresented as being the original software.
  {
 	wchar_t lName[1024];
 	size_t lLen;
-	if (!aDirname || !wcslen(aDirname)) return;
+	if (!aDirname || !wcslen(aDirname) || !wcslen(aioBuff)) return;
 	lLen = wcslen(aDirname) + 1 + wcslen(aioBuff);
 	if (lLen + 1 >= 1024) return;
 	wcscpy(lName, aioBuff);
@@ -133,6 +133,7 @@ misrepresented as being the original software.
  {
 	DWORD lPid = 0;
 	HWND w;
+	if (tinyfdOwner == (HWND)(intptr_t)-1) return NULL;
 	if (tinyfdOwner && IsWindow(tinyfdOwner)) return tinyfdOwner;
 	w = GetActiveWindow();
 	if (w) return w;

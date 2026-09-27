@@ -26,6 +26,9 @@ namespace lime {
 		std::wstring* filter;
 		std::wstring* defaultPath;
 		void* owner;
+		std::atomic<unsigned long> threadId;
+		bool placed;
+		bool disabledOwner;
 		std::atomic<bool> done;
 		std::vector<std::wstring*> results;
 		std::thread worker;
@@ -41,7 +44,8 @@ namespace lime {
 
 		#ifdef HX_WINDOWS
 		HRESULT com = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
-		tinyfd_setOwnerWindow (dialog->owner);
+		dialog->threadId = GetCurrentThreadId ();
+		tinyfd_setOwnerWindow ((void*)(intptr_t)-1);
 		#endif
 
 		std::wstring* path = 0;
@@ -68,6 +72,42 @@ namespace lime {
 	}
 
 
+#ifdef HX_WINDOWS
+	static BOOL CALLBACK FindDialogWindow (HWND hwnd, LPARAM param) {
+
+		if (!IsWindowVisible (hwnd) || GetWindow (hwnd, GW_OWNER) != NULL) return TRUE;
+		*(HWND*)param = hwnd;
+		return FALSE;
+
+	}
+
+	static void KeepDialogInFront (AsyncFileDialog* dialog) {
+
+		unsigned long threadId = dialog->threadId;
+		if (!threadId) return;
+		HWND found = NULL;
+		EnumThreadWindows (threadId, FindDialogWindow, (LPARAM)&found);
+		if (!found) return;
+		HWND game = (HWND)dialog->owner;
+
+		if (!dialog->placed && game && IsWindow (game)) {
+
+			RECT g, d;
+			if (GetWindowRect (game, &g) && GetWindowRect (found, &d)) {
+				int w = d.right - d.left, h = d.bottom - d.top;
+				int x = g.left + ((g.right - g.left) - w) / 2, y = g.top + ((g.bottom - g.top) - h) / 2;
+				SetWindowPos (found, HWND_TOP, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+			}
+			dialog->placed = true;
+			SetForegroundWindow (found);
+
+		}
+
+		if (game && GetForegroundWindow () == game) SetForegroundWindow (found);
+
+	}
+#endif
+
 	int FileDialog::AsyncStart (int type, std::wstring* title, std::wstring* filter, std::wstring* defaultPath) {
 
 		AsyncFileDialog* dialog = new AsyncFileDialog ();
@@ -76,6 +116,9 @@ namespace lime {
 		dialog->filter = filter;
 		dialog->defaultPath = defaultPath;
 		dialog->owner = 0;
+		dialog->threadId = 0;
+		dialog->placed = false;
+		dialog->disabledOwner = false;
 		dialog->done = false;
 
 		#ifdef HX_WINDOWS
@@ -87,6 +130,10 @@ namespace lime {
 			if (pid != GetCurrentProcessId ()) owner = NULL;
 		}
 		dialog->owner = owner;
+		if (owner && IsWindowEnabled (owner)) {
+			EnableWindow (owner, FALSE);
+			dialog->disabledOwner = true;
+		}
 		#endif
 
 		try {
@@ -98,6 +145,9 @@ namespace lime {
 			if (title) delete title;
 			if (filter) delete filter;
 			if (defaultPath) delete defaultPath;
+			#ifdef HX_WINDOWS
+			if (dialog->disabledOwner && dialog->owner) EnableWindow ((HWND)dialog->owner, TRUE);
+			#endif
 			delete dialog;
 			return 0;
 
@@ -116,9 +166,19 @@ namespace lime {
 		if (it == asyncFileDialogs.end ()) return -1;
 
 		AsyncFileDialog* dialog = it->second;
-		if (!dialog->done) return 0;
-
+		if (!dialog->done) {
+			#ifdef HX_WINDOWS
+			KeepDialogInFront (dialog);
+			#endif
+			return 0;
+		}
 		if (dialog->worker.joinable ()) dialog->worker.join ();
+		#ifdef HX_WINDOWS
+		if (dialog->disabledOwner && dialog->owner && IsWindow ((HWND)dialog->owner)) {
+			EnableWindow ((HWND)dialog->owner, TRUE);
+			SetForegroundWindow ((HWND)dialog->owner);
+		}
+		#endif
 
 		for (size_t i = 0; i < dialog->results.size (); i++) {
 
