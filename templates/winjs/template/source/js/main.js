@@ -1,4 +1,4 @@
-﻿// For an introduction to the Blank template, see the following documentation:
+// For an introduction to the Blank template, see the following documentation:
 // https://go.microsoft.com/fwlink/?LinkId=232509
 
 (function () {

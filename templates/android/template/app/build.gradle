@@ -1,4 +1,4 @@
-﻿import groovy.swing.SwingBuilder
+import groovy.swing.SwingBuilder
 import java.awt.GridBagLayout
 import java.awt.GridBagConstraints
 import javax.swing.border.EmptyBorder

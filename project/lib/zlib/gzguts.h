@@ -40,6 +40,8 @@
 #if defined(_WIN32)
 #  include <io.h>
 #  define WIDECHAR
+#else
+#  include <unistd.h>
 #endif
 
 #ifdef WINAPI_FAMILY

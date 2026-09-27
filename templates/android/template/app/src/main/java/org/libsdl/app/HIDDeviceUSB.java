@@ -52,13 +52,8 @@ class HIDDeviceUSB implements HIDDevice {
     @Override
     public String getSerialNumber() {
         String result = null;
-        if (Build.VERSION.SDK_INT >= 21 /* Android 5.0 (LOLLIPOP) */) {
-            try {
-                result = mDevice.getSerialNumber();
-            }
-            catch (SecurityException exception) {
-                //Log.w(TAG, "App permissions mean we cannot get serial number for device " + getDeviceName() + " message: " + exception.getMessage());
-            }
+        if (Build.VERSION.SDK_INT >= 21) {
+            result = mDevice.getSerialNumber();
         }
         if (result == null) {
             result = "";
@@ -74,7 +69,7 @@ class HIDDeviceUSB implements HIDDevice {
     @Override
     public String getManufacturerName() {
         String result = null;
-        if (Build.VERSION.SDK_INT >= 21 /* Android 5.0 (LOLLIPOP) */) {
+        if (Build.VERSION.SDK_INT >= 21) {
             result = mDevice.getManufacturerName();
         }
         if (result == null) {
@@ -86,7 +81,7 @@ class HIDDeviceUSB implements HIDDevice {
     @Override
     public String getProductName() {
         String result = null;
-        if (Build.VERSION.SDK_INT >= 21 /* Android 5.0 (LOLLIPOP) */) {
+        if (Build.VERSION.SDK_INT >= 21) {
             result = mDevice.getProductName();
         }
         if (result == null) {

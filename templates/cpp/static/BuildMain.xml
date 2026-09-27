@@ -1,4 +1,4 @@
-﻿<xml>
+<xml>
 
 	<include name="${HXCPP}/build-tool/BuildCommon.xml" />
 
