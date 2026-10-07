@@ -630,12 +630,7 @@ namespace lime {
 		if (Clipboard::HasText ()) {
 
 			const char* text = Clipboard::GetText ();
-			value _text = alloc_string (text);
-
-			// TODO: Should we free for all backends? (SDL requires it)
-
-			free ((char*)text);
-			return _text;
+			return alloc_string (text);
 
 		} else {
 
