@@ -10,6 +10,7 @@ import lime.tools.HXProject;
 #if lime
 import lime.utils.AssetManifest;
 #end
+import haxe.Json;
 import sys.io.File;
 import sys.FileSystem;
 #if (haxe_ver >= 4)
@@ -22,6 +23,7 @@ class ProjectXMLParser extends HXProject
 {
 	public var includePaths:Array<String>;
 
+	private static var jsonKeys:Map<String, Bool> = new Map();
 	private static var doubleVarMatch = new EReg("\\$\\${(.*?)}", "");
 	private static var varMatch = new EReg("\\${(.*?)}", "");
 
@@ -44,6 +46,21 @@ class ProjectXMLParser extends HXProject
 		}
 	}
 
+	private function resolveCheck(check:String):String
+	{
+		if (check.indexOf("=") > -1 || check.indexOf("<") > -1 || check.indexOf(">") > -1)
+		{
+			return ProjectHelper.replaceVariable(this, check);
+		}
+
+		if (jsonKeys.exists(check) && defines.get(check) == "false")
+		{
+			return "false";
+		}
+
+		return check;
+	}
+
 	private function isValidElement(element:Access, section:String):Bool
 	{
 		if (element.x.get("if") != null)
@@ -61,7 +78,7 @@ class ProjectXMLParser extends HXProject
 				for (required in requiredDefines)
 				{
 					required = substitute(required);
-					var check = StringTools.trim(required);
+					var check = resolveCheck(StringTools.trim(required));
 
 					if (check == "false")
 					{
@@ -104,7 +121,7 @@ class ProjectXMLParser extends HXProject
 				for (required in requiredDefines)
 				{
 					required = substitute(required);
-					var check = StringTools.trim(required);
+					var check = resolveCheck(StringTools.trim(required));
 
 					if (check == "false")
 					{
@@ -864,6 +881,9 @@ class ProjectXMLParser extends HXProject
 					defines.set(name, value);
 					haxedefs.set(name, value);
 					environment.set(name, value);
+
+				case "json":
+					parseJsonElement(element, extensionPath);
 
 				case "undefine":
 					defines.remove(element.att.name);
@@ -1885,6 +1905,54 @@ class ProjectXMLParser extends HXProject
 						config.parse(element, substitute);
 					}
 			}
+		}
+	}
+
+	private function parseJsonElement(element:Access, extensionPath:String):Void
+	{
+		var path = Path.combine(extensionPath, substitute(element.att.path));
+		var name = element.has.name ? substitute(element.att.name) : Path.withoutExtension(Path.withoutDirectory(path));
+
+		if (!FileSystem.exists(path))
+		{
+			Log.warn("Could not find JSON file \"" + path + "\"");
+			return;
+		}
+
+		try
+		{
+			defineJsonFields(name, Json.parse(File.getContent(path)));
+		}
+		catch (e:Dynamic)
+		{
+			Log.warn("Could not parse JSON file \"" + path + "\": " + e);
+		}
+	}
+
+	private function defineJsonFields(name:String, value:Dynamic):Void
+	{
+		if (value == null) return;
+
+		switch (Type.typeof(value))
+		{
+			case TObject:
+				for (field in Reflect.fields(value))
+				{
+					defineJsonFields(name + "." + field, Reflect.field(value, field));
+				}
+
+			case TClass(c) if (c == Array):
+				var list:Array<Dynamic> = value;
+				for (i in 0...list.length)
+				{
+					defineJsonFields(name + "." + i, list[i]);
+				}
+				defines.set(name + ".length", Std.string(list.length));
+				jsonKeys.set(name + ".length", true);
+
+			default:
+				defines.set(name, Std.string(value));
+				jsonKeys.set(name, true);
 		}
 	}
 
