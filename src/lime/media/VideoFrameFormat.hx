@@ -36,4 +36,6 @@ package lime.media;
 		Availability: native targets rendering with OpenGL or OpenGL ES.
 	**/
 	var TEXTURE = 2;
+
+	var BGRA = 3;
 }
