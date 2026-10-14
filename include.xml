@@ -110,6 +110,7 @@
 			<dependency name="CoreBluetooth.framework" />
 			<dependency name="CoreHaptics.framework" />
 			<dependency name="CoreMedia.framework" />
+			<dependency name="CoreVideo.framework" />
 		</section>
 
 		<section if="tvos">

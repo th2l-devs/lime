@@ -20,6 +20,7 @@ import js.Browser;
 class AudioManager
 {
 	public static var context:AudioContext;
+	@:noCompletion public static var __suspended(default, null):Bool = false;
 
 	public static function init(context:AudioContext = null)
 	{
@@ -160,6 +161,8 @@ class AudioManager
 
 	public static function resume():Void
 	{
+		__suspended = false;
+
 		#if !lime_doc_gen
 		if (context != null && context.type == OPENAL)
 		{
@@ -203,6 +206,8 @@ class AudioManager
 
 	public static function suspend():Void
 	{
+		__suspended = true;
+
 		#if !lime_doc_gen
 		if (context != null && context.type == OPENAL)
 		{
