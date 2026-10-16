@@ -242,6 +242,7 @@ class AL
 	{
 		#if (lime_cffi && lime_openal && !macro)
 		NativeCFFI.lime_al_remove_direct_filter(source);
+		if (!lime.media.FocusMuffle.__busy) lime.media.FocusMuffle.__removed(source);
 		#end
 	}
 
@@ -521,7 +522,9 @@ class AL
 	public static function createSource():ALSource
 	{
 		#if (lime_cffi && lime_openal && !macro)
-		return NativeCFFI.lime_al_gen_source();
+		var source:ALSource = NativeCFFI.lime_al_gen_source();
+		lime.media.FocusMuffle.__created(source);
+		return source;
 		#else
 		return null;
 		#end
@@ -550,6 +553,7 @@ class AL
 	public static function deleteSource(source:ALSource):Void
 	{
 		#if (lime_cffi && lime_openal && !macro)
+		lime.media.FocusMuffle.__deleted(source);
 		NativeCFFI.lime_al_delete_source(source);
 		#end
 	}
@@ -557,6 +561,7 @@ class AL
 	public static function deleteSources(sources:Array<ALSource>):Void
 	{
 		#if (lime_cffi && lime_openal && !macro)
+		if (sources != null) for (source in sources) lime.media.FocusMuffle.__deleted(source);
 		#if hl
 		var _sources = new hl.NativeArray<ALSource>(sources.length);
 		for (i in 0...sources.length)
@@ -660,8 +665,10 @@ class AL
 		var _result = [];
 		for (i in 0...result.length)
 			_result[i] = result[i];
+		for (source in _result) lime.media.FocusMuffle.__created(source);
 		return _result;
 		#else
+		if (result != null) for (source in (result : Array<ALSource>)) lime.media.FocusMuffle.__created(source);
 		return result;
 		#end
 		#else
@@ -1293,6 +1300,7 @@ class AL
 	public static function sourcei(source:ALSource, param:Int, value:Dynamic):Void
 	{
 		#if (lime_cffi && lime_openal && !macro)
+		if (param == DIRECT_FILTER && !lime.media.FocusMuffle.__busy) lime.media.FocusMuffle.__directFilter(source, value);
 		NativeCFFI.lime_al_sourcei(source, param, value);
 		#end
 	}
