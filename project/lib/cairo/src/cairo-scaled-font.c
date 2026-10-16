@@ -639,7 +639,7 @@ _cairo_scaled_font_compute_hash (cairo_scaled_font_t *scaled_font)
     hash = _hash_matrix_fnv (&scaled_font->ctm, hash);
     hash = _hash_mix_bits (hash);
 
-    hash ^= (unsigned long) scaled_font->original_font_face;
+    hash ^= (uint32_t) (uintptr_t) scaled_font->original_font_face;
     hash ^= cairo_font_options_hash (&scaled_font->options);
 
     /* final mixing of bits */

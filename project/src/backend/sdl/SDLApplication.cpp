@@ -1005,17 +1005,47 @@ namespace lime {
 
 	// Arbitrary, unlikely-to-collide timer id for the modal-loop render timer.
 	static const UINT_PTR LIME_MODAL_TIMER_ID = 0x4C494D45; // 'LIME'
+	static Uint64 modalLastTick = 0;
 
 	// Called directly by DispatchMessage in the modal loop, so it works even with a subclassed WndProc.
 	void __stdcall SDLApplication::ModalRenderTimerProc (void* hWnd, unsigned int message, uintptr_t idTimer, unsigned long dwTime) {
 
 		SDLApplication* application = currentApplication;
 
-		if (idTimer == LIME_MODAL_TIMER_ID && application && application->active && !inBackground) {
+		if (idTimer != LIME_MODAL_TIMER_ID || !application || !application->active || inBackground) return;
 
-			Uint64 currentUpdate = SDL_GetTicksNS ();
-			application->RenderFrame (currentUpdate);
-			application->nextUpdate = currentUpdate;
+		Uint64 tick = SDL_GetTicksNS ();
+		Uint64 interval = modalLastTick > 0 && tick > modalLastTick ? tick - modalLastTick : 0;
+		Uint64 maxInterval = SDL_NS_PER_MS * 50;
+		if (interval > maxInterval) interval = maxInterval;
+		modalLastTick = tick;
+
+		application->RenderFrame (tick);
+		application->nextUpdate = tick;
+
+		Uint64 period = application->framePeriod;
+		if (interval == 0) return;
+
+		Uint64 deadline = tick + interval;
+
+		while (application->active && !inBackground) {
+
+			Uint64 target = application->nextUpdate + period;
+			Uint64 now = SDL_GetTicksNS ();
+			Uint64 cost = now > application->nextUpdate ? now - application->nextUpdate : 0;
+			if (target + cost / 2 >= deadline || now + cost >= deadline) break;
+
+			if (now < target) {
+
+				System::GCEnterBlocking ();
+				SDL_DelayPrecise (target - now);
+				System::GCExitBlocking ();
+				now = SDL_GetTicksNS ();
+
+			}
+
+			application->RenderFrame (now);
+			application->nextUpdate = period > 0 ? target : now;
 
 		}
 
@@ -1031,6 +1061,8 @@ namespace lime {
 
 			case WM_ENTERSIZEMOVE:
 			case WM_ENTERMENULOOP:
+
+				modalLastTick = 0;
 
 				if (SetTimer (msg->hwnd, LIME_MODAL_TIMER_ID, USER_TIMER_MINIMUM, (TIMERPROC)&SDLApplication::ModalRenderTimerProc)) {
 
