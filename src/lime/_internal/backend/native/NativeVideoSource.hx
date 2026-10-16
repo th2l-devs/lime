@@ -62,6 +62,7 @@ class NativeVideoSource
 	private var pan:Float;
 	private var parent:VideoSource;
 	private var playing:Bool;
+	private var rate:Float;
 	private var timer:Timer;
 
 	public function new(parent:VideoSource)
@@ -78,6 +79,7 @@ class NativeVideoSource
 		completed = false;
 		frameEndTime = 0;
 		gain = 1;
+		rate = 1;
 		hasFrame = false;
 		loops = 0;
 		pan = 0;
@@ -102,6 +104,11 @@ class NativeVideoSource
 	public function getHasAudio():Bool
 	{
 		return decoder != null && decoder.hasAudio;
+	}
+
+	public function getRate():Float
+	{
+		return rate;
 	}
 
 	public function getHeight():Int
@@ -283,6 +290,26 @@ class NativeVideoSource
 		return value;
 	}
 
+	public function setRate(value:Float):Float
+	{
+		if (Math.isNaN(value)) return rate;
+		value = Math.max(0.25, Math.min(4, value));
+		if (value == rate) return rate;
+
+		clockTime = getTime();
+		clockStamp = getStamp();
+		audioClockStamp = -1;
+		audioCheckStamp = -1;
+		rate = value;
+
+		if (handle != null)
+		{
+			AL.sourcef(handle, AL.PITCH, rate);
+		}
+
+		return rate;
+	}
+
 	public function setLoops(value:Int):Int
 	{
 		return loops = value;
@@ -366,11 +393,11 @@ class NativeVideoSource
 		var elapsed = now - audioCheckStamp;
 		if (elapsed < AUDIO_CHECK_SECONDS) return;
 
-		var rate = (position - audioCheckPosition) / elapsed;
+		var speed = (position - audioCheckPosition) / elapsed / rate;
 
 		if (!audioStalled)
 		{
-			if (rate < 0.5 || rate > 2)
+			if (speed < 0.5 || speed > 2)
 			{
 				// The output stopped playing in real time, such as a sound server
 				// that hangs or a device that was unplugged. The clock carries on
@@ -379,7 +406,7 @@ class NativeVideoSource
 				audioRetryStamp = now + AUDIO_RETRY_SECONDS;
 			}
 		}
-		else if (rate > 0.75 && rate < 1.5 && Math.abs(position - getTime()) < 0.1)
+		else if (speed > 0.75 && speed < 1.5 && Math.abs(position - getTime()) < 0.1 * Math.max(1, rate))
 		{
 			// Playing in step again, so the audio leads the clock once more
 			audioStalled = false;
@@ -447,6 +474,7 @@ class NativeVideoSource
 		if (handle == null) return;
 
 		AL.sourcef(handle, AL.GAIN, gain);
+		AL.sourcef(handle, AL.PITCH, rate);
 
 		if (decoder.audioChannels == 1)
 		{
@@ -483,7 +511,7 @@ class NativeVideoSource
 	{
 		// A stalled output is only given audio up to a little past the clock, so
 		// one that drops what it is given does not drain the decoder
-		var limit = audioStalled ? getTime() + AUDIO_AHEAD_SECONDS : Math.POSITIVE_INFINITY;
+		var limit = audioStalled ? getTime() + AUDIO_AHEAD_SECONDS * Math.max(1, rate) : Math.POSITIVE_INFINITY;
 
 		while (freeBuffers.length > 0 && !decoder.audioComplete && decoder.audioTime < limit)
 		{
@@ -541,7 +569,7 @@ class NativeVideoSource
 			}
 		}
 
-		return playing ? clockTime + (getStamp() - clockStamp) : clockTime;
+		return playing ? clockTime + (getStamp() - clockStamp) * rate : clockTime;
 	}
 
 	@:noCompletion private function isAudioPositionValid(position:Float):Bool
@@ -555,7 +583,7 @@ class NativeVideoSource
 		{
 			var change = position - audioClockTime;
 
-			if (change < -AUDIO_JUMP_SECONDS || change > (now - audioClockStamp) * 2 + AUDIO_JUMP_SECONDS)
+			if (change < -AUDIO_JUMP_SECONDS || change > (now - audioClockStamp) * 2 * Math.max(1, rate) + AUDIO_JUMP_SECONDS)
 			{
 				audioStalled = true;
 				audioRetryStamp = now + AUDIO_RETRY_SECONDS;

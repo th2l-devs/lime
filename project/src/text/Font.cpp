@@ -360,11 +360,14 @@ namespace lime {
 
 					}
 
+					#ifndef HX_WINDOWS
 					if (file->isFile ()) {
 
 						error = FT_New_Face (library, resource->path, faceIndex, &face);
 
-					} else {
+					} else
+					#endif
+					{
 
 						Bytes data;
 						data.ReadFile (resource->path);

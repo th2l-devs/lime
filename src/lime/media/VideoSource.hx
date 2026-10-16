@@ -94,6 +94,8 @@ class VideoSource
 	**/
 	public var playing(get, never):Bool;
 
+	public var rate(get, set):Float;
+
 	/**
 		The path or URL of the video.
 	**/
@@ -224,6 +226,16 @@ class VideoSource
 	@:noCompletion private function set_gain(value:Float):Float
 	{
 		return __backend.setGain(value);
+	}
+
+	@:noCompletion private function get_rate():Float
+	{
+		return __backend.getRate();
+	}
+
+	@:noCompletion private function set_rate(value:Float):Float
+	{
+		return __backend.setRate(value);
 	}
 
 	@:noCompletion private function get_hasAudio():Bool

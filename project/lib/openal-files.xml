@@ -165,7 +165,6 @@
             <file name="${NATIVE_TOOLKIT_PATH}/openal/Alc/backends/winmm.cpp" />
             <file name="${NATIVE_TOOLKIT_PATH}/openal/core/uiddefs.cpp" />
 
-            <compilerflag value="-DRESTRICT=" />
             <compilerflag value="-DFORCE_ALIGN=" />
             <compilerflag value="-DWIN32" />
             <compilerflag value="-D_WINDOWS" />

@@ -2852,7 +2852,7 @@ _cairo_scaled_font_allocate_glyph (cairo_scaled_font_t *scaled_font,
     if (unlikely (page == NULL))
 	return _cairo_error (CAIRO_STATUS_NO_MEMORY);
 
-    page->cache_entry.hash = (unsigned long) scaled_font;
+    page->cache_entry.hash = (uintptr_t) scaled_font;
     page->cache_entry.size = 1; /* XXX occupancy weighting? */
     page->num_glyphs = 0;
 

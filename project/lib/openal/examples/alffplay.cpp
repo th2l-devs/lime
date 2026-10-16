@@ -57,6 +57,15 @@ struct SwsContext;
 #include "SDL3/SDL_main.h"
 #include "SDL3/SDL_render.h"
 #include "SDL3/SDL_video.h"
+
+namespace {
+constexpr auto DefineSDLColorspace(SDL_ColorType type, SDL_ColorRange range,
+    SDL_ColorPrimaries primaries, SDL_TransferCharacteristics transfer,
+    SDL_MatrixCoefficients matrix, SDL_ChromaLocation chromaloc) noexcept
+{
+    return SDL_DEFINE_COLORSPACE(type, range, primaries, transfer, matrix, chromaloc);
+}
+} // namespace
 #ifdef __GNUC__
 _Pragma("GCC diagnostic pop")
 #endif
@@ -177,6 +186,57 @@ struct SwsContextDeleter {
 using SwsContextPtr = std::unique_ptr<SwsContext,SwsContextDeleter>;
 
 
+struct SDLProps {
+    SDL_PropertiesID mProperties{};
+
+    SDLProps() : mProperties{SDL_CreateProperties()} { }
+    ~SDLProps() { SDL_DestroyProperties(mProperties); }
+
+    SDLProps(const SDLProps&) = delete;
+    auto operator=(const SDLProps&) -> SDLProps& = delete;
+
+    [[nodiscard]]
+    auto getid() const noexcept -> SDL_PropertiesID { return mProperties; }
+
+    auto setPointer(const char *name, void *value) const
+    { return SDL_SetPointerProperty(mProperties, name, value); }
+
+    auto setString(const char *name, const char *value) const
+    { return SDL_SetStringProperty(mProperties, name, value); }
+
+    auto setInt(const char *name, Sint64 value) const
+    { return SDL_SetNumberProperty(mProperties, name, value); }
+};
+
+struct TextureFormatEntry {
+    AVPixelFormat avformat;
+    SDL_PixelFormat sdlformat;
+};
+constexpr auto TextureFormatMap = std::array{
+    TextureFormatEntry{AV_PIX_FMT_RGB8,           SDL_PIXELFORMAT_RGB332},
+    TextureFormatEntry{AV_PIX_FMT_RGB444,         SDL_PIXELFORMAT_XRGB4444},
+    TextureFormatEntry{AV_PIX_FMT_RGB555,         SDL_PIXELFORMAT_XRGB1555},
+    TextureFormatEntry{AV_PIX_FMT_BGR555,         SDL_PIXELFORMAT_XBGR1555},
+    TextureFormatEntry{AV_PIX_FMT_RGB565,         SDL_PIXELFORMAT_RGB565},
+    TextureFormatEntry{AV_PIX_FMT_BGR565,         SDL_PIXELFORMAT_BGR565},
+    TextureFormatEntry{AV_PIX_FMT_RGB24,          SDL_PIXELFORMAT_RGB24},
+    TextureFormatEntry{AV_PIX_FMT_BGR24,          SDL_PIXELFORMAT_BGR24},
+    TextureFormatEntry{AV_PIX_FMT_0RGB32,         SDL_PIXELFORMAT_XRGB8888},
+    TextureFormatEntry{AV_PIX_FMT_0BGR32,         SDL_PIXELFORMAT_XBGR8888},
+    TextureFormatEntry{AV_PIX_FMT_NE(RGB0, 0BGR), SDL_PIXELFORMAT_RGBX8888},
+    TextureFormatEntry{AV_PIX_FMT_NE(BGR0, 0RGB), SDL_PIXELFORMAT_BGRX8888},
+    TextureFormatEntry{AV_PIX_FMT_RGB32,          SDL_PIXELFORMAT_ARGB8888},
+    TextureFormatEntry{AV_PIX_FMT_RGB32_1,        SDL_PIXELFORMAT_RGBA8888},
+    TextureFormatEntry{AV_PIX_FMT_BGR32,          SDL_PIXELFORMAT_ABGR8888},
+    TextureFormatEntry{AV_PIX_FMT_BGR32_1,        SDL_PIXELFORMAT_BGRA8888},
+    TextureFormatEntry{AV_PIX_FMT_YUV420P,        SDL_PIXELFORMAT_IYUV},
+    TextureFormatEntry{AV_PIX_FMT_YUYV422,        SDL_PIXELFORMAT_YUY2},
+    TextureFormatEntry{AV_PIX_FMT_UYVY422,        SDL_PIXELFORMAT_UYVY},
+    TextureFormatEntry{AV_PIX_FMT_NV12,           SDL_PIXELFORMAT_NV12},
+    TextureFormatEntry{AV_PIX_FMT_NV21,           SDL_PIXELFORMAT_NV21},
+};
+
+
 struct ChannelLayout : public AVChannelLayout {
     ChannelLayout() : AVChannelLayout{} { }
     ChannelLayout(const ChannelLayout &rhs) : AVChannelLayout{}
@@ -198,11 +258,10 @@ class DataQueue {
     size_t mTotalSize{0};
     bool mFinished{false};
 
-    AVPacketPtr getPacket()
+    auto getPacket() -> AVPacketPtr
     {
-        std::unique_lock<std::mutex> plock{mPacketMutex};
-        while(mPackets.empty() && !mFinished)
-            mPacketCond.wait(plock);
+        auto plock = std::unique_lock{mPacketMutex};
+        mPacketCond.wait(plock, [this] { return !mPackets.empty() || mFinished; });
         if(mPackets.empty())
             return nullptr;
 
@@ -217,15 +276,17 @@ public:
 
     int sendPacket(AVCodecContext *codecctx)
     {
-        auto packet = AVPacketPtr{getPacket()};
+        auto packet = getPacket();
 
         auto ret = int{};
         {
             auto flock = std::unique_lock{mFrameMutex};
-            mInFrameCond.wait(flock, [codecctx,pkt=packet.get(),&ret]()
+            mInFrameCond.wait(flock, [this,codecctx,pkt=packet.get(),&ret]
             {
                 ret = avcodec_send_packet(codecctx, pkt);
-                return ret != AVERROR(EAGAIN);
+                if(ret != AVERROR(EAGAIN)) return true;
+                mOutFrameCond.notify_one();
+                return false;
             });
         }
         mOutFrameCond.notify_one();
@@ -246,10 +307,12 @@ public:
         auto ret = int{};
         {
             auto flock = std::unique_lock{mFrameMutex};
-            mOutFrameCond.wait(flock, [codecctx,frame,&ret]()
+            mOutFrameCond.wait(flock, [this,codecctx,frame,&ret]
             {
                 ret = avcodec_receive_frame(codecctx, frame);
-                return ret != AVERROR(EAGAIN);
+                if(ret != AVERROR(EAGAIN)) return true;
+                mInFrameCond.notify_one();
+                return false;
             });
         }
         mInFrameCond.notify_one();
@@ -259,7 +322,7 @@ public:
     void setFinished()
     {
         {
-            std::lock_guard<std::mutex> packetlock{mPacketMutex};
+            auto plock = std::lock_guard{mPacketMutex};
             mFinished = true;
         }
         mPacketCond.notify_one();
@@ -268,7 +331,7 @@ public:
     void flush()
     {
         {
-            std::lock_guard<std::mutex> packetlock{mPacketMutex};
+            auto plock = std::lock_guard{mPacketMutex};
             mFinished = true;
 
             mPackets.clear();
@@ -277,21 +340,18 @@ public:
         mPacketCond.notify_one();
     }
 
-    bool put(const AVPacket *pkt)
+    auto put(const AVPacket *pkt) -> bool
     {
         {
-            std::lock_guard<std::mutex> packet_lock{mPacketMutex};
+            auto plock = std::lock_guard{mPacketMutex};
             if(mTotalSize >= mSizeLimit || mFinished)
                 return false;
 
-            mPackets.push_back(AVPacketPtr{av_packet_alloc()});
-            if(av_packet_ref(mPackets.back().get(), pkt) != 0)
-            {
+            auto *newpkt = mPackets.emplace_back(AVPacketPtr{av_packet_alloc()}).get();
+            if(av_packet_ref(newpkt, pkt) == 0)
+                mTotalSize += static_cast<unsigned int>(newpkt->size);
+            else
                 mPackets.pop_back();
-                return true;
-            }
-
-            mTotalSize += static_cast<unsigned int>(mPackets.back()->size);
         }
         mPacketCond.notify_one();
         return true;
@@ -416,6 +476,8 @@ struct VideoState {
 
     SDL_Texture *mImage{nullptr};
     int mWidth{0}, mHeight{0}; /* Full texture size */
+    unsigned int mSDLFormat{SDL_PIXELFORMAT_UNKNOWN};
+    int mAVFormat{AV_PIX_FMT_NONE};
     bool mFirstUpdate{true};
 
     std::atomic<bool> mEOS{false};
@@ -966,7 +1028,7 @@ int AudioState::handler()
     const auto has_bfmt_hoa = bool{has_bfmt_ex
         && alIsExtensionPresent("AL_SOFT_bformat_hoa") != AL_FALSE};
     /* AL_SOFT_bformat_hoa supports up to 14th order (225 channels). */
-    static constexpr auto max_ambi_order = 14;
+    const auto max_ambi_order = has_bfmt_hoa ? 14 : 1;
     auto ambi_order = 0;
 
     /* Find a suitable format for OpenAL. */
@@ -1031,7 +1093,7 @@ int AudioState::handler()
                  * is 4 channels for 3D buffers, unless AL_SOFT_bformat_hoa is
                  * also supported.
                  */
-                ambi_order = has_bfmt_hoa ? std::min(order, max_ambi_order) : 1;
+                ambi_order = std::min(order, max_ambi_order);
                 mFrameSize *= ALuint(ambi_order+1) * ALuint(ambi_order+1);
                 mFormat = alGetEnumValue("AL_FORMAT_BFORMAT3D_FLOAT32");
             }
@@ -1085,7 +1147,7 @@ int AudioState::handler()
             if(channels == mCodecCtx->ch_layout.nb_channels
                 || channels+2 == mCodecCtx->ch_layout.nb_channels)
             {
-                ambi_order = has_bfmt_hoa ? std::min(order, max_ambi_order) : 1;
+                ambi_order = std::min(order, max_ambi_order);
                 mFrameSize *= ALuint(ambi_order+1) * ALuint(ambi_order+1);
                 mFormat = alGetEnumValue("AL_FORMAT_BFORMAT3D_8");
             }
@@ -1139,7 +1201,7 @@ int AudioState::handler()
             if(channels == mCodecCtx->ch_layout.nb_channels
                 || channels+2 == mCodecCtx->ch_layout.nb_channels)
             {
-                ambi_order = has_bfmt_hoa ? std::min(order, max_ambi_order) : 1;
+                ambi_order = std::min(order, max_ambi_order);
                 mFrameSize *= ALuint(ambi_order+1) * ALuint(ambi_order+1);
                 mFormat = alGetEnumValue("AL_FORMAT_BFORMAT3D_16");
             }
@@ -1491,18 +1553,174 @@ void VideoState::updateVideo(SDL_Window *screen, SDL_Renderer *renderer, bool re
         mPictQCond.notify_one();
 
         /* allocate or resize the buffer! */
-        bool fmt_updated{false};
-        if(!mImage || mWidth != frame->width || mHeight != frame->height)
+        if(!mImage || mWidth != frame->width || mHeight != frame->height
+            || frame->format != mAVFormat)
         {
-            fmt_updated = true;
             if(mImage)
                 SDL_DestroyTexture(mImage);
-            mImage = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING,
-                frame->width, frame->height);
-            if(!mImage)
-                fmt::println(stderr, "Failed to create YV12 texture!");
-            mWidth = frame->width;
-            mHeight = frame->height;
+            mImage = nullptr;
+            mSwscaleCtx = nullptr;
+
+            auto fmtiter = std::find_if(TextureFormatMap.begin(), TextureFormatMap.end(),
+                [frame](const TextureFormatEntry &entry) noexcept
+                { return frame->format == entry.avformat; });
+            if(fmtiter != TextureFormatMap.end())
+            {
+                auto props = SDLProps{};
+                props.setInt(SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, fmtiter->sdlformat);
+                props.setInt(SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, SDL_TEXTUREACCESS_STREAMING);
+                props.setInt(SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, frame->width);
+                props.setInt(SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, frame->height);
+
+                /* Should be a better way to check YCbCr vs RGB. */
+                const auto ctype = (frame->format == AV_PIX_FMT_YUV420P
+                    || frame->format == AV_PIX_FMT_YUYV422
+                    || frame->format == AV_PIX_FMT_UYVY422 || frame->format == AV_PIX_FMT_NV12
+                    || frame->format == AV_PIX_FMT_NV21) ? SDL_COLOR_TYPE_YCBCR
+                    : SDL_COLOR_TYPE_RGB;
+                const auto crange = std::invoke([frame]
+                {
+                    switch(frame->color_range)
+                    {
+                    case AVCOL_RANGE_UNSPECIFIED: return SDL_COLOR_RANGE_UNKNOWN;
+                    case AVCOL_RANGE_MPEG: return SDL_COLOR_RANGE_LIMITED;
+                    case AVCOL_RANGE_JPEG: return SDL_COLOR_RANGE_FULL;
+                    case AVCOL_RANGE_NB: break;
+                    }
+                    return SDL_COLOR_RANGE_UNKNOWN;
+                });
+                const auto cprims = std::invoke([frame]
+                {
+                    switch(frame->color_primaries)
+                    {
+                    case AVCOL_PRI_RESERVED0: break;
+                    case AVCOL_PRI_BT709: return SDL_COLOR_PRIMARIES_BT709;
+                    case AVCOL_PRI_UNSPECIFIED: return SDL_COLOR_PRIMARIES_UNSPECIFIED;
+                    case AVCOL_PRI_RESERVED: break;
+                    case AVCOL_PRI_BT470M: return SDL_COLOR_PRIMARIES_BT470M;
+                    case AVCOL_PRI_BT470BG: return SDL_COLOR_PRIMARIES_BT470BG;
+                    case AVCOL_PRI_SMPTE170M: return SDL_COLOR_PRIMARIES_BT601;
+                    case AVCOL_PRI_SMPTE240M: return SDL_COLOR_PRIMARIES_SMPTE240;
+                    case AVCOL_PRI_FILM: return SDL_COLOR_PRIMARIES_GENERIC_FILM;
+                    case AVCOL_PRI_BT2020: return SDL_COLOR_PRIMARIES_BT2020;
+                    case AVCOL_PRI_SMPTE428: return SDL_COLOR_PRIMARIES_XYZ;
+                    case AVCOL_PRI_SMPTE431: return SDL_COLOR_PRIMARIES_SMPTE431;
+                    case AVCOL_PRI_SMPTE432: return SDL_COLOR_PRIMARIES_SMPTE432;
+                    case AVCOL_PRI_EBU3213: return SDL_COLOR_PRIMARIES_EBU3213;
+                    case AVCOL_PRI_NB: break;
+                    }
+                    return SDL_COLOR_PRIMARIES_UNKNOWN;
+                });
+                const auto ctransfer = std::invoke([frame]
+                {
+                    switch(frame->color_trc)
+                    {
+                    case AVCOL_TRC_RESERVED0: break;
+                    case AVCOL_TRC_BT709: return SDL_TRANSFER_CHARACTERISTICS_BT709;
+                    case AVCOL_TRC_UNSPECIFIED: return SDL_TRANSFER_CHARACTERISTICS_UNSPECIFIED;
+                    case AVCOL_TRC_RESERVED: break;
+                    case AVCOL_TRC_GAMMA22: return SDL_TRANSFER_CHARACTERISTICS_GAMMA22;
+                    case AVCOL_TRC_GAMMA28: return SDL_TRANSFER_CHARACTERISTICS_GAMMA28;
+                    case AVCOL_TRC_SMPTE170M: return SDL_TRANSFER_CHARACTERISTICS_BT601;
+                    case AVCOL_TRC_SMPTE240M: return SDL_TRANSFER_CHARACTERISTICS_SMPTE240;
+                    case AVCOL_TRC_LINEAR: return SDL_TRANSFER_CHARACTERISTICS_LINEAR;
+                    case AVCOL_TRC_LOG: return SDL_TRANSFER_CHARACTERISTICS_LOG100;
+                    case AVCOL_TRC_LOG_SQRT: return SDL_TRANSFER_CHARACTERISTICS_LOG100_SQRT10;
+                    case AVCOL_TRC_IEC61966_2_4: return SDL_TRANSFER_CHARACTERISTICS_IEC61966;
+                    case AVCOL_TRC_BT1361_ECG: return SDL_TRANSFER_CHARACTERISTICS_BT1361;
+                    case AVCOL_TRC_IEC61966_2_1: return SDL_TRANSFER_CHARACTERISTICS_SRGB;
+                    case AVCOL_TRC_BT2020_10: return SDL_TRANSFER_CHARACTERISTICS_BT2020_10BIT;
+                    case AVCOL_TRC_BT2020_12: return SDL_TRANSFER_CHARACTERISTICS_BT2020_12BIT;
+                    case AVCOL_TRC_SMPTE2084: return SDL_TRANSFER_CHARACTERISTICS_PQ;
+                    case AVCOL_TRC_SMPTE428: return SDL_TRANSFER_CHARACTERISTICS_SMPTE428;
+                    case AVCOL_TRC_ARIB_STD_B67: return SDL_TRANSFER_CHARACTERISTICS_HLG;
+                    case AVCOL_TRC_NB: break;
+                    }
+                    return SDL_TRANSFER_CHARACTERISTICS_UNKNOWN;
+                });
+                const auto cmatrix = std::invoke([frame]
+                {
+                    switch(frame->colorspace)
+                    {
+                    case AVCOL_SPC_RGB: return SDL_MATRIX_COEFFICIENTS_IDENTITY;
+                    case AVCOL_SPC_BT709: return SDL_MATRIX_COEFFICIENTS_BT709;
+                    case AVCOL_SPC_UNSPECIFIED: return SDL_MATRIX_COEFFICIENTS_UNSPECIFIED;
+                    case AVCOL_SPC_RESERVED: break;
+                    case AVCOL_SPC_FCC: return SDL_MATRIX_COEFFICIENTS_FCC;
+                    case AVCOL_SPC_BT470BG: return SDL_MATRIX_COEFFICIENTS_BT470BG;
+                    case AVCOL_SPC_SMPTE170M: return SDL_MATRIX_COEFFICIENTS_BT601;
+                    case AVCOL_SPC_SMPTE240M: return SDL_MATRIX_COEFFICIENTS_SMPTE240;
+                    case AVCOL_SPC_YCGCO: return SDL_MATRIX_COEFFICIENTS_YCGCO;
+                    case AVCOL_SPC_BT2020_NCL: return SDL_MATRIX_COEFFICIENTS_BT2020_NCL;
+                    case AVCOL_SPC_BT2020_CL: return SDL_MATRIX_COEFFICIENTS_BT2020_CL;
+                    case AVCOL_SPC_SMPTE2085: return SDL_MATRIX_COEFFICIENTS_SMPTE2085;
+                    case AVCOL_SPC_CHROMA_DERIVED_NCL: return SDL_MATRIX_COEFFICIENTS_CHROMA_DERIVED_NCL;
+                    case AVCOL_SPC_CHROMA_DERIVED_CL: return SDL_MATRIX_COEFFICIENTS_CHROMA_DERIVED_CL;
+                    case AVCOL_SPC_ICTCP: return SDL_MATRIX_COEFFICIENTS_ICTCP;
+                    case AVCOL_SPC_IPT_C2: break; // ???
+                    case AVCOL_SPC_YCGCO_RE: return SDL_MATRIX_COEFFICIENTS_YCGCO; // ???
+                    case AVCOL_SPC_YCGCO_RO: return SDL_MATRIX_COEFFICIENTS_YCGCO; // ???
+                    case AVCOL_SPC_NB: break;
+                    }
+                    return SDL_MATRIX_COEFFICIENTS_UNSPECIFIED;
+                });
+                const auto cchromaloc = std::invoke([frame]
+                {
+                    switch(frame->chroma_location)
+                    {
+                    case AVCHROMA_LOC_UNSPECIFIED: return SDL_CHROMA_LOCATION_NONE;
+                    case AVCHROMA_LOC_LEFT: return SDL_CHROMA_LOCATION_LEFT;
+                    case AVCHROMA_LOC_CENTER: return SDL_CHROMA_LOCATION_CENTER;
+                    case AVCHROMA_LOC_TOPLEFT: return SDL_CHROMA_LOCATION_TOPLEFT;
+                    case AVCHROMA_LOC_TOP: return SDL_CHROMA_LOCATION_TOPLEFT; // ???
+                    case AVCHROMA_LOC_BOTTOMLEFT: return SDL_CHROMA_LOCATION_LEFT; // ???
+                    case AVCHROMA_LOC_BOTTOM: return SDL_CHROMA_LOCATION_CENTER; // ???
+                    case AVCHROMA_LOC_NB: break;
+                    }
+                    return SDL_CHROMA_LOCATION_NONE;
+                });
+
+                const auto colorspace = DefineSDLColorspace(ctype, crange, cprims, ctransfer,
+                    cmatrix, cchromaloc);
+                props.setInt(SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, colorspace);
+
+                mImage = SDL_CreateTextureWithProperties(renderer, props.getid());
+                if(!mImage)
+                    fmt::println(stderr, "Failed to create texture!");
+                mWidth = frame->width;
+                mHeight = frame->height;
+                mSDLFormat = fmtiter->sdlformat;
+                mAVFormat = fmtiter->avformat;
+            }
+            else
+            {
+                /* If there's no matching format, convert to RGB24. */
+                fmt::println(stderr, "Could not find SDL texture format for pix_fmt {0:#x} ({0})",
+                    as_unsigned(frame->format));
+
+                auto props = SDLProps{};
+                props.setInt(SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_RGB24);
+                props.setInt(SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, SDL_TEXTUREACCESS_STREAMING);
+                props.setInt(SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, frame->width);
+                props.setInt(SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, frame->height);
+
+                mImage = SDL_CreateTextureWithProperties(renderer, props.getid());
+                if(!mImage)
+                    fmt::println(stderr, "Failed to create texture!");
+                mWidth = frame->width;
+                mHeight = frame->height;
+                mSDLFormat = SDL_PIXELFORMAT_RGB24;
+                mAVFormat = frame->format;
+
+                mSwscaleCtx = SwsContextPtr{sws_getContext(
+                    frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                    frame->width, frame->height, AV_PIX_FMT_RGB24, 0,
+                    nullptr, nullptr, nullptr)};
+
+                sws_setColorspaceDetails(mSwscaleCtx.get(), sws_getCoefficients(frame->colorspace),
+                    (frame->color_range==AVCOL_RANGE_JPEG), sws_getCoefficients(SWS_CS_DEFAULT), 1,
+                    0<<16, 1<<16, 1<<16);
+            }
         }
 
         int frame_width{frame->width - static_cast<int>(frame->crop_left + frame->crop_right)};
@@ -1528,45 +1746,37 @@ void VideoState::updateVideo(SDL_Window *screen, SDL_Renderer *renderer, bool re
 
         if(mImage)
         {
-            void *pixels{nullptr};
-            int pitch{0};
-
-            if(mCodecCtx->pix_fmt == AV_PIX_FMT_YUV420P)
+            if(mSDLFormat == SDL_PIXELFORMAT_IYUV || mSDLFormat == SDL_PIXELFORMAT_YV12)
                 SDL_UpdateYUVTexture(mImage, nullptr,
                     frame->data[0], frame->linesize[0],
                     frame->data[1], frame->linesize[1],
-                    frame->data[2], frame->linesize[2]
-                );
-            else if(!SDL_LockTexture(mImage, nullptr, &pixels, &pitch))
-                fmt::println(stderr, "Failed to lock texture: {}", SDL_GetError());
-            else
+                    frame->data[2], frame->linesize[2]);
+            else if(mSDLFormat == SDL_PIXELFORMAT_NV12 || mSDLFormat == SDL_PIXELFORMAT_NV21)
+                SDL_UpdateNVTexture(mImage, nullptr,
+                    frame->data[0], frame->linesize[0],
+                    frame->data[1], frame->linesize[1]);
+            else if(mSwscaleCtx)
             {
-                // Convert the image into YUV format that SDL uses
-                int w{frame->width};
-                int h{frame->height};
-                if(!mSwscaleCtx || fmt_updated)
+                auto pixels = voidp{};
+                auto pitch = int{};
+                if(!SDL_LockTexture(mImage, nullptr, &pixels, &pitch))
+                    fmt::println(stderr, "Failed to lock texture: {}", SDL_GetError());
+                else
                 {
-                    mSwscaleCtx.reset(sws_getContext(
-                        w, h, mCodecCtx->pix_fmt,
-                        w, h, AV_PIX_FMT_YUV420P, 0,
-                        nullptr, nullptr, nullptr
-                    ));
+                    /* Formats passing through mSwscaleCtx are converted to
+                     * 24-bit RGB, which is interleaved/non-planar.
+                     */
+                    const auto pict_data = std::array{static_cast<uint8_t*>(pixels)};
+                    const auto pict_linesize = std::array{pitch};
+
+                    sws_scale(mSwscaleCtx.get(), std::data(frame->data),
+                        std::data(frame->linesize), 0, frame->height, pict_data.data(),
+                        pict_linesize.data());
+                    SDL_UnlockTexture(mImage);
                 }
-
-                /* point pict at the queue */
-                const auto framesize = static_cast<size_t>(w)*static_cast<size_t>(h);
-                const auto pixelspan = al::span{static_cast<uint8_t*>(pixels), framesize*3/2};
-                const std::array pict_data{
-                    al::to_address(pixelspan.begin()),
-                    al::to_address(pixelspan.begin() + ptrdiff_t{w}*h),
-                    al::to_address(pixelspan.begin() + ptrdiff_t{w}*h + ptrdiff_t{w}*h/4)
-                };
-                const std::array pict_linesize{pitch, pitch/2, pitch/2};
-
-                sws_scale(mSwscaleCtx.get(), std::data(frame->data), std::data(frame->linesize),
-                    0, h, pict_data.data(), pict_linesize.data());
-                SDL_UnlockTexture(mImage);
             }
+            else
+                SDL_UpdateTexture(mImage, nullptr, frame->data[0], frame->linesize[0]);
 
             redraw = true;
         }
@@ -1679,27 +1889,24 @@ int MovieState::decode_interrupt_cb(void *ctx)
 
 bool MovieState::prepare()
 {
-    AVIOContext *avioctx{nullptr};
-    AVIOInterruptCB intcb{decode_interrupt_cb, this};
-    if(avio_open2(&avioctx, mFilename.c_str(), AVIO_FLAG_READ, &intcb, nullptr))
+    auto intcb = AVIOInterruptCB{decode_interrupt_cb, this};
+    if(avio_open2(al::out_ptr(mIOContext), mFilename.c_str(), AVIO_FLAG_READ, &intcb, nullptr) < 0)
     {
         fmt::println(stderr, "Failed to open {}", mFilename);
         return false;
     }
-    mIOContext.reset(avioctx);
 
     /* Open movie file. If avformat_open_input fails it will automatically free
-     * this context, so don't set it onto a smart pointer yet.
+     * this context.
      */
-    AVFormatContext *fmtctx{avformat_alloc_context()};
-    fmtctx->pb = mIOContext.get();
-    fmtctx->interrupt_callback = intcb;
-    if(avformat_open_input(&fmtctx, mFilename.c_str(), nullptr, nullptr) != 0)
+    mFormatCtx.reset(avformat_alloc_context());
+    mFormatCtx->pb = mIOContext.get();
+    mFormatCtx->interrupt_callback = intcb;
+    if(avformat_open_input(al::inout_ptr(mFormatCtx), mFilename.c_str(), nullptr, nullptr) < 0)
     {
         fmt::println(stderr, "Failed to open {}", mFilename);
         return false;
     }
-    mFormatCtx.reset(fmtctx);
 
     /* Retrieve stream information */
     if(avformat_find_stream_info(mFormatCtx.get(), nullptr) < 0)

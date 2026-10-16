@@ -701,7 +701,7 @@ _hb_uniscribe_shape (hb_shape_plan_t    *shape_plan,
 
 	/* Will convert to pointer after all is ready, since feature_records.array
 	 * may move as we grow it. */
-	range->props.potfRecords = reinterpret_cast<OPENTYPE_FEATURE_RECORD *> (offset);
+	range->props.potfRecords = reinterpret_cast<OPENTYPE_FEATURE_RECORD *> ((uintptr_t) offset);
 	range->props.cotfRecords = feature_records.len - offset;
 	range->index_first = last_index;
 	range->index_last  = event->index - 1;
