@@ -13,7 +13,7 @@ namespace lime
 
         if (obj == nullptr)
         {
-            __android_log_print(ANDROID_LOG_VERBOSE, "Lime", "Failed to create a DocumentSystem Java object: %p", pthread_self());
+            __android_log_print(ANDROID_LOG_VERBOSE, "Lime", "Failed to create a DocumentSystem Java object: %ld", (long)pthread_self());
             return;
         }
 
@@ -52,19 +52,13 @@ namespace lime
         jboolean copy;
         int length = env->GetArrayLength((jarray)jResult);
         jbyte *jData = env->GetByteArrayElements((jbyteArray)jResult, &copy);
-        unsigned char data[length];
 
-        for (int i = 0; i < length; i++)
-        {
-            data[i] = static_cast<unsigned char>(jData[i]);
-        }
+        QuickVec<unsigned char> results;
+        results.append(reinterpret_cast<unsigned char*>(jData), length);
 
         env->ReleaseByteArrayElements((jbyteArray)jResult, jData, JNI_ABORT);
         env->DeleteLocalRef(jPath);
         env->DeleteLocalRef(jResult);
-
-        QuickVec<unsigned char> results;
-        results.append(data, length);
 
         return results;
     }

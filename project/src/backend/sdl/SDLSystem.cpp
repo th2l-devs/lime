@@ -40,10 +40,45 @@
 #include <locale>
 #include <codecvt>
 
-using wstring_convert = std::wstring_convert<std::codecvt_utf8<wchar_t>>;
 
 
 namespace lime {
+
+
+	static std::wstring* utf8ToWide (const char* text) {
+
+		std::wstring out;
+		const unsigned char* s = (const unsigned char*)text;
+
+		while (*s) {
+
+			uint32_t c = *s++;
+			int extra = c >= 0xF0 ? 3 : (c >= 0xE0 ? 2 : (c >= 0xC0 ? 1 : 0));
+			if (extra > 0) c &= (0x3F >> extra);
+
+			for (int i = 0; i < extra && (*s & 0xC0) == 0x80; i++) {
+
+				c = (c << 6) | (*s++ & 0x3F);
+
+			}
+
+			if (sizeof (wchar_t) == 2 && c > 0xFFFF) {
+
+				c -= 0x10000;
+				out.push_back ((wchar_t)(0xD800 + (c >> 10)));
+				out.push_back ((wchar_t)(0xDC00 + (c & 0x3FF)));
+
+			} else {
+
+				out.push_back ((wchar_t)c);
+
+			}
+
+		}
+
+		return new std::wstring (out);
+
+	}
 
 
 	static int id_bounds;
@@ -123,8 +158,7 @@ namespace lime {
 
 				if (path != nullptr) {
 
-					wstring_convert converter;
-					result = new std::wstring (converter.from_bytes(path));
+					result = utf8ToWide (path);
 
 				}
 
@@ -138,8 +172,7 @@ namespace lime {
 
 				if (path != nullptr) {
 
-        			wstring_convert converter;
-					result = new std::wstring (converter.from_bytes(path));
+        			result = utf8ToWide (path);
 					SDL_free (path);
 
 				}
@@ -172,8 +205,7 @@ namespace lime {
 				if (home != NULL) {
 
 					std::string path = std::string (home) + std::string ("/Desktop");
-					wstring_convert converter;
-					result = new std::wstring (converter.from_bytes(path));
+					result = utf8ToWide (path);
 
 				}
 
@@ -210,8 +242,7 @@ namespace lime {
 				if (home != NULL) {
 
 					std::string path = std::string (home) + std::string ("/Documents");
-					wstring_convert converter;
-					result = new std::wstring (converter.from_bytes(path));
+					result = utf8ToWide (path);
 
 				}
 
@@ -285,8 +316,7 @@ namespace lime {
 				if (home != NULL) {
 
 					std::string path = std::string (home);
-					wstring_convert converter;
-					result = new std::wstring (converter.from_bytes(path));
+					result = utf8ToWide (path);
 
 				}
 

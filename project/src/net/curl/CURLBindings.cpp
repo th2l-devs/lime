@@ -919,6 +919,10 @@ namespace lime {
 
 				break;
 
+			default:
+
+				break;
+
 
 		}
 
@@ -1036,6 +1040,10 @@ namespace lime {
 			case CURLINFO_LASTONE:
 
 				// ignore
+
+				break;
+
+			default:
 
 				break;
 
