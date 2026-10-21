@@ -9,6 +9,8 @@
 
 	<application ::foreach ANDROID_APPLICATION::::if ((value != null) && (value != ""))::::key::="::value::" ::end::::end::>
 
+		<profileable android:shell="true" />
+
 		::if (WIN_ORIENTATION=="portrait")::
 		<meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="Portrait PortraitUpsideDown" />
 		::elseif (WIN_ORIENTATION=="landscape")::
