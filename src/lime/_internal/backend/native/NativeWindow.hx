@@ -330,6 +330,39 @@ class NativeWindow
 		return frameRate;
 	}
 
+	@:noCompletion private static var __focusedQuery:Dynamic = null;
+	@:noCompletion private static var __focusedQueryLoaded:Bool = false;
+
+	public function getFocused():Null<Bool>
+	{
+		#if (!macro && lime_cffi && !hl)
+		if (handle != null)
+		{
+			if (!__focusedQueryLoaded)
+			{
+				__focusedQueryLoaded = true;
+				try
+				{
+					__focusedQuery = lime.system.CFFI.load("lime", "lime_window_get_focused", 1, true);
+				}
+				catch (_:Dynamic) {}
+			}
+			if (__focusedQuery != null)
+			{
+				try
+				{
+					return __focusedQuery(handle) == true;
+				}
+				catch (_:Dynamic)
+				{
+					__focusedQuery = null;
+				}
+			}
+		}
+		#end
+		return null;
+	}
+
 	public function getMouseLock():Bool
 	{
 		if (handle != null)

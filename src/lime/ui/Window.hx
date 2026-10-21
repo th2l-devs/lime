@@ -456,6 +456,15 @@ class Window
 		__backend.close();
 	}
 
+	@:noCompletion public function __queryFocused():Null<Bool>
+	{
+		#if (lime_cffi && !macro && !html5)
+		return __backend.getFocused();
+		#else
+		return null;
+		#end
+	}
+
 	public function focus():Void
 	{
 		__backend.focus();

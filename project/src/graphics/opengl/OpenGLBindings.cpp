@@ -18,6 +18,10 @@
 #include <dlfcn.h>
 #endif
 
+#if !defined (NEED_EXTENSIONS) && defined (LIME_GLES) && defined (LIME_SDL)
+#include <SDL3/SDL.h>
+#endif
+
 #ifndef APIENTRY
 #define APIENTRY GLAPIENTRY
 #endif
@@ -619,19 +623,32 @@ namespace lime {
 
 	}
 
-	HL_PRIM void HL_NAME(hl_gl_blend_barrier) () {
+	static void gl_blend_barrier () {
 
 		#ifdef NEED_EXTENSIONS
 		if (glBlendBarrierKHR) glBlendBarrierKHR ();
+		#elif defined (LIME_GLES) && defined (LIME_SDL)
+		static void (*barrier) (void) = 0;
+		static bool resolved = false;
+		if (!resolved) {
+			resolved = true;
+			barrier = (void (*) (void))SDL_GL_GetProcAddress ("glBlendBarrier");
+			if (!barrier) barrier = (void (*) (void))SDL_GL_GetProcAddress ("glBlendBarrierKHR");
+		}
+		if (barrier) barrier ();
 		#endif
+
+	}
+
+	HL_PRIM void HL_NAME(hl_gl_blend_barrier) () {
+
+		gl_blend_barrier ();
 
 	}
 
 	void lime_gl_blend_barrier () {
 
-		#ifdef NEED_EXTENSIONS
-		if (glBlendBarrierKHR) glBlendBarrierKHR ();
-		#endif
+		gl_blend_barrier ();
 
 	}
 

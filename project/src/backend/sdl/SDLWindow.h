@@ -33,6 +33,7 @@ namespace lime {
 			virtual int GetHeight ();
 			virtual uint32_t GetID ();
 			virtual bool GetMouseLock ();
+			virtual bool GetFocused ();
 			virtual float GetOpacity ();
 			virtual double GetScale ();
 			virtual bool GetTextInputEnabled ();

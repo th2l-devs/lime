@@ -693,6 +693,13 @@ namespace lime {
 	}
 
 
+	bool SDLWindow::GetFocused () {
+
+		return (SDL_GetWindowFlags (sdlWindow) & SDL_WINDOW_INPUT_FOCUS) != 0;
+
+	}
+
+
 	float SDLWindow::GetOpacity () {
 
 		float opacity = SDL_GetWindowOpacity (sdlWindow);

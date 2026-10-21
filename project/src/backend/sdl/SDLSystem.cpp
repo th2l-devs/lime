@@ -233,7 +233,8 @@ namespace lime {
 
 				#elif defined (ANDROID)
 
-				result = new std::wstring (L"/mnt/sdcard/Documents");
+				const char* external = SDL_GetAndroidExternalStoragePath ();
+				result = external != NULL ? utf8ToWide (external) : new std::wstring (L"/mnt/sdcard/Documents");
 
 				#else
 

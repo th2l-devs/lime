@@ -3830,6 +3830,22 @@ namespace lime {
 	}
 
 
+	bool lime_window_get_focused (value window) {
+
+		Window* targetWindow = (Window*)val_data (window);
+		return targetWindow->GetFocused ();
+
+	}
+
+
+	HL_PRIM bool HL_NAME(hl_window_get_focused) (HL_CFFIPointer* window) {
+
+		Window* targetWindow = (Window*)window->ptr;
+		return targetWindow->GetFocused ();
+
+	}
+
+
 	double lime_window_get_opacity (value window) {
 
 		Window* targetWindow = (Window*)val_data (window);
@@ -4518,6 +4534,7 @@ namespace lime {
 	DEFINE_PRIME1 (lime_window_get_height);
 	DEFINE_PRIME1 (lime_window_get_id);
 	DEFINE_PRIME1 (lime_window_get_mouse_lock);
+	DEFINE_PRIME1 (lime_window_get_focused);
 	DEFINE_PRIME1 (lime_window_get_scale);
 	DEFINE_PRIME1 (lime_window_get_text_input_enabled);
 	DEFINE_PRIME1 (lime_window_get_width);
@@ -4716,6 +4733,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_I32, hl_window_get_height, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_I32, hl_window_get_id, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_BOOL, hl_window_get_mouse_lock, _TCFFIPOINTER);
+	DEFINE_HL_PRIM (_BOOL, hl_window_get_focused, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_F64, hl_window_get_scale, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_BOOL, hl_window_get_text_input_enabled, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_I32, hl_window_get_width, _TCFFIPOINTER);

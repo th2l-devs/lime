@@ -66,11 +66,17 @@ class FocusMuffle
 			focused = true;
 			retarget();
 		});
+		var current = window.__queryFocused();
+		if (current != null) focused = current;
 	}
 
 	static function retarget():Void
 	{
+		#if mobile
+		target = 0;
+		#else
 		target = enabled && !focused ? 1 : 0;
+		#end
 		if (target == amount) return;
 		if (timer == null)
 		{
@@ -144,6 +150,11 @@ class FocusMuffle
 	@:noCompletion public static function __created(source:ALSource):Void
 	{
 		if (source == null) return;
+		if (!hooked && enabled)
+		{
+			hook();
+			retarget();
+		}
 		sources.push(source);
 		if (amount > 0 && ensureFilter()) attach(source);
 	}
