@@ -21,6 +21,7 @@
  */
 #include <hl.h>
 #include <hlmodule.h>
+#include "hlsystem.h"
 
 #ifdef HL_WIN
 #	include <locale.h>
@@ -38,6 +39,11 @@ typedef char pchar;
 #define pcompare strcmp
 #define ptoi atoi
 #define PSTR(x) x
+#endif
+
+#if defined(HL_WIN_DESKTOP) && defined(HL_DX12_AGILITY_VERSION)
+__declspec(dllexport) extern const UINT D3D12SDKVersion = HL_DX12_AGILITY_VERSION;
+__declspec(dllexport) extern const char* D3D12SDKPath = u8"./D3D12/";
 #endif
 
 typedef struct {
@@ -88,19 +94,77 @@ static hl_code *load_code( const pchar *file, char **error_msg, bool print_error
 	return code;
 }
 
-static bool check_reload( main_context *m ) {
-	int time = pfiletime(m->file);
+static main_context* main_ctx = NULL;
+
+static bool check_reload( vbyte *alt_file ) {
+	main_context* m = main_ctx;
+	pchar* file = alt_file ? (pchar*)alt_file : m->file;
+	int time = pfiletime(file);
 	bool changed;
 	if( time == m->file_time )
 		return false;
 	char *error_msg = NULL;
-	hl_code *code = load_code(m->file, &error_msg, false);
+	hl_code *code = load_code(file, &error_msg, false);
 	if( code == NULL )
 		return false;
 	changed = hl_module_patch(m->m, code);
 	m->file_time = time;
 	hl_code_free(code);
 	return changed;
+}
+
+static bool load_plugin( pchar *file ) {
+	char *error_msg = NULL;
+	hl_code *code = load_code(file, &error_msg, false);
+	if( code == NULL )
+		return false;
+	int i;
+	for(i=0;i<code->ntypes;i++) {
+		hl_type *t1 = code->types + i;
+		if( t1->kind != HOBJ && t1->kind != HSTRUCT ) continue;
+		hl_type *t2 = hl_module_resolve_type(main_ctx->m, t1, false);
+		// ensure that cast will work between types !
+		if( t2 ) t1->obj->name = t2->obj->name;
+	}
+	hl_module *m = hl_module_alloc(code);
+	if( m == NULL )
+		return false;
+	if( !hl_module_init(m,false) )
+		return false;
+	hl_code_free(code);
+	vclosure cl;
+	cl.t = m->code->functions[m->functions_indexes[m->code->entrypoint]].type;
+	cl.fun = m->functions_ptrs[m->code->entrypoint];
+	cl.hasValue = 0;
+ 	hl_dyn_call(&cl,NULL,0);
+	return true;
+}
+
+static vdynamic *resolve_type( hl_type *t, hl_type *gt ) {
+	hl_type *t2 = hl_module_resolve_type(main_ctx->m, t, true);
+	if( t2 == NULL || (t2->kind != HOBJ && t2->kind != HSTRUCT))
+		return NULL;
+	hl_module_context *m = t->obj->m;
+	hl_module_context *m2 = t2->obj->m;
+	hl_type *gt2 = hl_module_resolve_type(main_ctx->m, gt, true);
+	// patch bindings (constructor, etc.)
+	int i;
+	for(i=0;i<gt->obj->nbindings;i++) {
+		int mid1 = gt->obj->bindings[(i<<1)|1];
+		int mid2 = gt2->obj->bindings[(i<<1)|1];
+		void *fun1 = m->functions_ptrs[mid1];
+		void **fun2 = &m2->functions_ptrs[mid2];
+		hl_jit_patch_method(fun1,fun2);
+	}
+	// patch methods
+	for(i=0;i<t->obj->nproto;i++) {
+		int mid1 = t->obj->proto[i].findex;
+		int mid2 = t2->obj->proto[i].findex;
+		void *fun1 = m->functions_ptrs[mid1];
+		void **fun2 = &m2->functions_ptrs[mid2];
+		hl_jit_patch_method(fun1,fun2);
+	}
+	return (vdynamic*)*t2->obj->global_value;
 }
 
 #ifdef HL_VCC
@@ -113,8 +177,10 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 #include <signal.h>
 static void handle_signal( int signum ) {
 	signal(signum, SIG_DFL);
-	printf("SIGNAL %d\n",signum);
-	hl_dump_stack();
+	printf("SIGNAL %d[%s]\n",signum,strsignal(signum));
+	if( hl_get_thread() != NULL ) {
+		hl_dump_stack();
+	}
 	fflush(stdout);
 	raise(signum);
 }
@@ -193,7 +259,7 @@ int main(int argc, pchar *argv[]) {
 		file = PSTR("hlboot.dat");
 		fchk = pfopen(file,"rb");
 		if( fchk == NULL ) {
-			printf("HL/JIT %d.%d.%d (c)2015-2022 Haxe Foundation\n  Usage : hl [--debug <port>] [--debug-wait] <file>\n",HL_VERSION>>16,(HL_VERSION>>8)&0xFF,HL_VERSION&0xFF);
+			printf("HL/JIT %d.%d.%d (c)2015-2025 Haxe Foundation\n  Usage : hl [--debug <port>] [--debug-wait] <file>\n",HL_VERSION>>16,(HL_VERSION>>8)&0xFF,HL_VERSION&0xFF);
 			return 1;
 		}
 		fclose(fchk);
@@ -203,8 +269,12 @@ int main(int argc, pchar *argv[]) {
 		}
 	}
 	hl_global_init();
-	hl_sys_init((void**)argv,argc,file);
+	hl_setup.file_path = file;
+	hl_setup.sys_args = (pchar**)argv;
+	hl_setup.sys_nargs = argc;
+	hl_sys_init();
 	hl_register_thread(&ctx);
+	main_ctx = &ctx;
 	ctx.file = file;
 	ctx.code = load_code(file, &error_msg, true);
 	if( ctx.code == NULL ) {
@@ -218,11 +288,13 @@ int main(int argc, pchar *argv[]) {
 		return 3;
 	if( hot_reload ) {
 		ctx.file_time = pfiletime(ctx.file);
-		hl_setup_reload_check(check_reload,&ctx);
+		hl_setup.reload_check = check_reload;
 	}
+	hl_setup.load_plugin = load_plugin;
+	hl_setup.resolve_type = resolve_type;
 	hl_code_free(ctx.code);
 	if( debug_port > 0 && !hl_module_debug(ctx.m,debug_port,debug_wait) ) {
-		fprintf(stderr,"Could not start debugger on port %d",debug_port);
+		fprintf(stderr,"Could not start debugger on port %d\n",debug_port);
 		return 4;
 	}
 	cl.t = ctx.code->functions[ctx.m->functions_indexes[ctx.m->code->entrypoint]].type;
@@ -233,20 +305,23 @@ int main(int argc, pchar *argv[]) {
 	ctx.ret = hl_dyn_call_safe(&cl,NULL,0,&isExc);
 	hl_profile_end();
 	if( isExc ) {
-		varray *a = hl_exception_stack();
-		int i;
-		uprintf(USTR("Uncaught exception: %s\n"), hl_to_string(ctx.ret));
-		for(i=0;i<a->size;i++)
-			uprintf(USTR("Called from %s\n"), hl_aptr(a,uchar*)[i]);
+		hl_print_uncaught_exception(ctx.ret);
 		hl_debug_break();
+#ifdef HL_THREADS
+		hl_gc_major();
+#else
 		hl_global_free();
+#endif
 		return 1;
 	}
+#ifdef HL_THREADS
+	// other threads may still be running and crash if globals are freed, so only run a gc here
+	hl_gc_major();
+#else
 	hl_module_free(ctx.m);
 	hl_free(&ctx.code->alloc);
-	// do not call hl_unregister_thread() or hl_global_free will display error 
-	// on global_lock if there are threads that are still running (such as debugger)
 	hl_global_free();
+#endif
 	return 0;
 }
 

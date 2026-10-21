@@ -18,7 +18,7 @@ typedef DisplaySetting = {
 	framerate : Int
 }
 
-@:enum abstract DisplayMode(Int) {
+enum abstract DisplayMode(Int) {
 	var Windowed = 0;
 	var Fullscreen = 1;
 	var Borderless = 2;
@@ -34,7 +34,9 @@ class Window {
 	public static inline var HIDDEN    = 0x000001;
 	public static inline var RESIZABLE = 0x000002;
 
+	static var _UID = 0;
 	var win : WinPtr;
+	public var id(default,null) : Int;
 	public var title(default, set) : String;
 	public var width(get, never) : Int;
 	public var height(get, never) : Int;
@@ -50,12 +52,18 @@ class Window {
 	public var displaySetting : DisplaySetting;
 	public var selectedMonitor : MonitorHandle;
 	public var vsync : Bool;
+	public var dragAndDropEnabled(default, set) : Bool;
+
+	public var displayScale(get, never) : Float;
+
+	var icon : Icon = null;
 
 	public function new( title : String, width : Int, height : Int, x : Int = CW_USEDEFAULT, y : Int = CW_USEDEFAULT, windowFlags : Int = RESIZABLE ) {
 		win = winCreateEx(x, y, width, height, windowFlags);
 		this.title = title;
 		windows.push(this);
 		vsync = true;
+		id = ++_UID;
 	}
 
 	function set_title(name:String) {
@@ -103,6 +111,30 @@ class Window {
 		winSetPosition(win, x, y);
 	}
 
+	public function setCursorPosition( x : Int, y : Int ) {
+		return winSetCursorPos(win, x, y);
+	}
+
+	public static function setCursorPositionGlobal( x : Int, y : Int ) {
+		return setCursorPos(x, y);
+	}
+
+	public function setRelativeMouseMode( enabled : Bool ) : Bool {
+		return winSetRelativeMouseMode(win, enabled);
+	}
+
+	public function getRelativeMouseMode() : Bool {
+		return winGetRelativeMouseMode();
+	}
+
+	public function captureMouseEvents(enable: Bool) {
+		if (enable) {
+			winSetCapture(win);
+		} else {
+			winReleaseCapture();
+		}
+	}
+
 	public function center( centerPrimary : Bool = true ) {
 		winCenter(win, centerPrimary);
 	}
@@ -110,6 +142,10 @@ class Window {
 	public function destroy() {
 		winDestroy(win);
 		win = null;
+		if (icon != null) {
+			icon.destroy();
+			icon = null;
+		}
 		windows.remove(this);
 	}
 
@@ -125,12 +161,34 @@ class Window {
 		winResize(win, 2);
 	}
 
+	public function focus() {
+		winSetFocus(win);
+	}
+
+	public function setIcon(width : Int, height: Int, pixels : hl.Bytes) {
+		var newIcon = Icon.createIcon(width, height, pixels);
+		if (newIcon == null)
+			return;
+
+		winSetIcon(win, newIcon);
+
+		if (icon != null) {
+			icon.destroy();
+		}
+
+		icon = newIcon;
+	}
+
 	public function getNextEvent( e : Event ) : Bool {
 		return winGetNextEvent(win, e);
 	}
 
 	public function clipCursor( enable : Bool ) : Void {
-		winClipCursor(enable ? win : null);
+		winClipCursor(win, enable);
+	}
+
+	public function setDarkMode(enable : Bool) : Void {
+		winSetDarkMode(win, enable);
 	}
 
 	public static function getDisplaySettings(monitor : MonitorHandle) : Array<DisplaySetting> {
@@ -207,6 +265,15 @@ class Window {
 		return h;
 	}
 
+	function get_displayScale() : Float {
+		return winGetScaleFactorForWindow(win);
+	}
+
+	@:hlNative("?directx", "win_get_scale_factor_for_window")
+	static function winGetScaleFactorForWindow(win: WinPtr) : Float {
+		return 1.0;
+	}
+
 	function get_x() {
 		var x = 0;
 		winGetPosition(win, x, null);
@@ -226,6 +293,11 @@ class Window {
 	function set_opacity(v) {
 		winSetOpacity(win, v);
 		return v;
+	}
+
+	function set_dragAndDropEnabled(v) {
+		winSetDragAcceptFiles(win, v);
+		return dragAndDropEnabled = v;
 	}
 
 	@:hlNative("?directx", "win_get_display_settings")
@@ -297,6 +369,10 @@ class Window {
 	static function winGetPosition( win : WinPtr, x : hl.Ref<Int>, y : hl.Ref<Int> ) {
 	}
 
+	@:hlNative("?directx", "win_set_focus")
+	static function winSetFocus( win: WinPtr ) {
+	}
+
 	static function winGetOpacity( win : WinPtr ) : Float {
 		return 0.0;
 	}
@@ -316,11 +392,56 @@ class Window {
 		return 0;
 	}
 
+	@:hlNative("?directx", "win_set_dark_mode")
+	static function winSetDarkMode(win: WinPtr, enabled: Bool) : Void {
+	}
+
 	static function winGetNextEvent( win : WinPtr, event : Dynamic ) : Bool {
 		return false;
 	}
 
-	static function winClipCursor( win : WinPtr ) : Void {
+	static function winClipCursor( win : WinPtr, enable : Bool ) : Void {
+	}
+
+	static function setCursorPos( x : Int, y : Int ) : Bool {
+		return false;
+	}
+
+	static function winSetCursorPos( win : WinPtr, x : Int, y : Int ) : Bool {
+		return false;
+	}
+
+	static function winSetRelativeMouseMode( win : WinPtr, enable : Bool ) : Bool {
+		return false;
+	}
+
+	static function winGetRelativeMouseMode() : Bool {
+		return false;
+	}
+
+	@:hlNative("?directx", "win_set_capture")
+	static function winSetCapture(win: WinPtr) {
+	}
+
+	@:hlNative("?directx", "win_release_capture")
+	static function winReleaseCapture() {
+	}
+
+	@:hlNative("?directx", "win_set_drag_accept_files")
+	static function winSetDragAcceptFiles( win : WinPtr, enable: Bool ) : Void {
+	}
+
+	public static function detectKeyboardLayout() @:privateAccess {
+		return String.fromUTF8( dxDetectKeyboardLayout() );
+	}
+
+	@:hlNative("directx", "detect_keyboard_layout")
+	static function dxDetectKeyboardLayout() : hl.Bytes {
+		return null;
+	}
+
+	@:hlNative("?directx", "win_set_icon")
+	static function winSetIcon(win: WinPtr, icon: Icon) : Void {
 	}
 
 }

@@ -4,6 +4,7 @@
 #include <system/Display.h>
 #include <system/DisplayMode.h>
 #include <system/JNI.h>
+#include <system/Locale.h>
 #include <system/System.h>
 
 #ifdef HX_MACOS
@@ -134,6 +135,41 @@ namespace lime {
 		#else
 		return 0;
 		#endif
+
+	}
+
+
+	std::string* Locale::GetPreferredLocales () {
+
+		// The languages the user prefers, most preferred first, as "en-US,fr,ja"
+		int count = 0;
+		SDL_Locale** locales = SDL_GetPreferredLocales (&count);
+		std::string* result = new std::string ();
+
+		if (locales) {
+
+			for (int i = 0; i < count; i++) {
+
+				SDL_Locale* locale = locales[i];
+				if (!locale || !locale->language) continue;
+
+				if (!result->empty ()) result->append (",");
+				result->append (locale->language);
+
+				if (locale->country) {
+
+					result->append ("-");
+					result->append (locale->country);
+
+				}
+
+			}
+
+			SDL_free (locales);
+
+		}
+
+		return result;
 
 	}
 

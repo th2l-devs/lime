@@ -196,6 +196,7 @@ HL_PRIM void HL_NAME(ui_stop_loop)() {
 
 typedef struct {
 	hl_thread *thread;
+	hl_thread_info *main_thread;
 	DWORD original;
 	void *callback;
 	double timeout;
@@ -214,7 +215,7 @@ static void sentinel_loop( vsentinel *s ) {
 		while( true ) {
 			Sleep(time_ms);
 			if( tick != s->ticks || s->pause ) break;
-			if( hl_is_blocking() ) continue;
+			if( s->main_thread->gc_blocking ) continue;
 			k++;
 			if( k == 16 ) {
 				if( hl_detect_debugger() ) {
@@ -226,12 +227,16 @@ static void sentinel_loop( vsentinel *s ) {
 				GetThreadContext(h,&regs);
 				// simulate a call
 #				ifdef HL_64
-				*--(int_val*)regs.Rsp = regs.Rip;
-				*--(int_val*)regs.Rsp = regs.Rsp;
+				int_val* rsp = (int_val*)regs.Rsp;
+				// ensure the stack is aligned to 16 bytes 
+				rsp = (int_val*)((int_val)rsp & ~15);
+				*--rsp = (int_val)regs.Rip;
+				regs.Rsp = (int_val)rsp;
 				regs.Rip = (int_val)s->callback;
 #				else
-				*--(int_val*)regs.Esp = regs.Eip;
-				*--(int_val*)regs.Esp = regs.Esp;
+				int_val* esp = (int_val*)regs.Esp;
+				*--esp = (int_val)regs.Eip;
+				regs.Esp = (int_val)esp;
 				regs.Eip = (int_val)s->callback;
 #				endif
 				// resume
@@ -253,6 +258,7 @@ HL_PRIM vsentinel *HL_NAME(ui_start_sentinel)( double timeout, vclosure *c ) {
 	s->ticks = 0;
 	s->pause = false;
 	s->original = GetCurrentThreadId();
+	s->main_thread = hl_get_thread();
 	s->callback = c->fun;
 #	ifdef HL_THREADS
 	s->thread = hl_thread_start(sentinel_loop,s,false);
@@ -326,34 +332,45 @@ HL_PRIM bool HL_NAME(ui_set_clipboard_text)(char* text) {
 		CloseClipboard();
 		return false;
 	}
-	int len = (int) strlen(text);
-	HGLOBAL g = GlobalAlloc(0, (len + 1) * sizeof(TCHAR));
+	wchar_t* wtext = hl_to_utf16(text);
+	int wlen = (int) wcslen(wtext);
+	HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (wlen + 1) * sizeof(wchar_t));
 	if (g == NULL) {
 		CloseClipboard();
 		return false;
 	}
-	char* chr = GlobalLock(g);
-	memcpy(chr, text, len);
-	chr[len] = '\0';
+	wchar_t* dst = (wchar_t*) GlobalLock(g);
+	if (dst == NULL) {
+		GlobalFree(g);
+		CloseClipboard();
+		return false;
+	}
+	memcpy(dst, wtext, (wlen + 1) * sizeof(wchar_t));
 	GlobalUnlock(g);
-	HANDLE h = SetClipboardData(CF_TEXT, g);
+	HANDLE h = SetClipboardData(CF_UNICODETEXT, g);
+	if (h == NULL) {
+		GlobalFree(g);
+		CloseClipboard();
+		return false;
+	}
 	CloseClipboard();
-	return h != NULL;
+	return true;
 }
 
 HL_PRIM byte* HL_NAME(ui_get_clipboard_text)() {
 	if (!OpenClipboard(NULL))
 		return NULL;
-	HANDLE d = GetClipboardData(CF_TEXT);
+	HANDLE d = GetClipboardData(CF_UNICODETEXT);
 	if (d == NULL) {
 		CloseClipboard();
 		return NULL;
 	}
-	char* chr = (char*) GlobalLock(d);
-	if (chr == NULL) {
+	wchar_t* wchr = (wchar_t*) GlobalLock(d);
+	if (wchr == NULL) {
 		CloseClipboard();
 		return NULL;
 	}
+	char* chr = hl_to_utf8(wchr);
 	vbyte* b = hl_copy_bytes(chr, (int) strlen(chr) + 1);
 	GlobalUnlock(d);
 	CloseClipboard();

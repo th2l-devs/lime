@@ -20,6 +20,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #include <hl.h>
+#include "hlsystem.h"
+
 #include <stdarg.h>
 #include <string.h>
 
@@ -46,29 +48,8 @@ HL_PRIM void *hl_fatal_error( const char *msg, const char *file, int line ) {
 	return NULL;
 }
 
-typedef uchar *(*resolve_symbol_type)( void *addr, uchar *out, int *outSize );
-typedef int (*capture_stack_type)( void **stack, int size );
-
-static resolve_symbol_type resolve_symbol_func = NULL;
-static capture_stack_type capture_stack_func = NULL;
-
-int hl_internal_capture_stack( void **stack, int size ) {
-	return capture_stack_func(stack,size);
-}
-
 HL_PRIM uchar *hl_resolve_symbol( void *addr, uchar *out, int *outSize ) {
-	return resolve_symbol_func(addr, out, outSize);
-}
-
-static void (*throw_jump)( jmp_buf, int ) = NULL;
-
-HL_PRIM void hl_setup_longjump( void *j ) {
-	throw_jump = j;
-}
-
-HL_PRIM void hl_setup_exception( void *resolve_symbol, void *capture_stack ) {
-	resolve_symbol_func = resolve_symbol;
-	capture_stack_func = capture_stack;
+	return hl_setup.resolve_symbol(addr, out, outSize);
 }
 
 HL_PRIM void hl_set_error_handler( vclosure *d ) {
@@ -78,11 +59,24 @@ HL_PRIM void hl_set_error_handler( vclosure *d ) {
 }
 
 static bool break_on_trap( hl_thread_info *t, hl_trap_ctx *trap, vdynamic *v ) {
+	bool unwrapped = false;
+	vdynamic *vvalue = NULL;
+	if( !hl_setup.is_debugger_attached ) return false;
 	while( true ) {
 		if( trap == NULL || trap == t->trap_uncaught || t->trap_current == NULL || trap->prev == NULL ) return true;
 		if( !trap->tcheck || !v ) return false;
+		if( !unwrapped ) {
+			unwrapped = true;
+			hl_type *vt = v->t;
+			if( vt->kind == HOBJ && ucmp(vt->obj->name, USTR("haxe.ValueException")) == 0 ) {
+				hl_field_lookup *f = hl_lookup_find(vt->obj->rt->lookup, vt->obj->rt->nlookup, hl_hash_gen(USTR("value"), true));
+				if( f != NULL && f->field_index >= 0 )
+					vvalue = *(vdynamic**)((char*)(v) + f->field_index);
+			}
+		}
 		hl_type *ot = ((hl_type**)trap->tcheck)[1]; // it's an obj with first field is a hl_type
 		if( !ot || hl_safe_cast(v->t,ot) ) return false;
+		if( vvalue != NULL && hl_safe_cast(vvalue->t,ot) ) return false;
 		trap = trap->prev;
 	}
 	return false;
@@ -92,21 +86,23 @@ HL_PRIM void hl_throw( vdynamic *v ) {
 	hl_thread_info *t = hl_get_thread();
 	hl_trap_ctx *trap = t->trap_current;
 	bool call_handler = false;
+	if( t->flags & HL_EXC_KILL )
+		hl_fatal("Exception Occured");
 	if( !(t->flags & HL_EXC_RETHROW) )
-		t->exc_stack_count = capture_stack_func(t->exc_stack_trace, HL_EXC_MAX_STACK);
+		t->exc_stack_count = hl_setup.capture_stack(t->exc_stack_trace, HL_EXC_MAX_STACK);
 	t->exc_value = v;
 	t->trap_current = trap->prev;
 	call_handler = trap == t->trap_uncaught || t->trap_current == NULL;
 	if( (t->flags&HL_EXC_CATCH_ALL) || break_on_trap(t,trap,v) ) {
-		if( trap == t->trap_uncaught ) t->trap_uncaught = NULL;
 		t->flags |= HL_EXC_IS_THROW;
 		hl_debug_break();
 		t->flags &= ~HL_EXC_IS_THROW;
 	}
+	if( trap == t->trap_uncaught ) t->trap_uncaught = NULL;
 	t->flags &= ~HL_EXC_RETHROW;
 	if( t->exc_handler && call_handler ) hl_dyn_call_safe(t->exc_handler,&v,1,&call_handler);
-	if( throw_jump == NULL ) throw_jump = longjmp;
-	throw_jump(trap->buf,1);
+	if( hl_setup.throw_jump == NULL ) hl_setup.throw_jump = longjmp;
+	hl_setup.throw_jump(trap->buf,1);
 	HL_UNREACHABLE;
 }
 
@@ -116,26 +112,56 @@ HL_PRIM void hl_null_access() {
 }
 
 HL_PRIM void hl_throw_buffer( hl_buffer *b ) {
-	vdynamic *d = hl_alloc_dynamic(&hlt_bytes);	
+	vdynamic *d = hl_alloc_dynamic(&hlt_bytes);
 	d->v.ptr = hl_buffer_content(b,NULL);
 	hl_throw(d);
 }
 
 HL_PRIM void hl_dump_stack() {
 	void *stack[0x1000];
-	int count = capture_stack_func(stack, 0x1000);
+	int count = hl_setup.capture_stack(stack, 0x1000);
 	int i;
 	for(i=0;i<count;i++) {
 		void *addr = stack[i];
 		uchar sym[512];
 		int size = 512;
-		uchar *str = resolve_symbol_func(addr, sym, &size);
+		uchar *str = hl_setup.resolve_symbol(addr, sym, &size);
 		if( str == NULL ) {
 			int iaddr = (int)(int_val)addr;
 			usprintf(sym,512,USTR("@0x%X"),iaddr);
 			str = sym;
 		}
 		uprintf(USTR("%s\n"),str);
+	}
+	fflush(stdout);
+}
+
+static bool maybe_print_custom_stack( vdynamic *exc ) {
+	hl_type *ot = exc->t;
+	while( ot->kind == HOBJ ) {
+		if( ot->obj->super == NULL ) {
+			if( ucmp(ot->obj->name, USTR("haxe.Exception")) == 0 ) {
+				hl_field_lookup *f = hl_lookup_find(ot->obj->rt->lookup, ot->obj->rt->nlookup, hl_hash_gen(USTR("__customStack"), true));
+				if( f == NULL || f->field_index < 0 ) break;
+				vdynamic *customStack = *(vdynamic**)((char*)(exc) + f->field_index);
+				if( customStack != NULL ) {
+					uprintf(USTR("%s\n"), hl_to_string(customStack));
+					return true;
+				}
+			}
+			break;
+		}
+		ot = ot->obj->super;
+	}
+	return false;
+}
+
+HL_PRIM void hl_print_uncaught_exception(vdynamic *exc) {
+	uprintf(USTR("Uncaught exception: %s\n"), hl_to_string(exc));
+	if (!maybe_print_custom_stack(exc)) {
+		varray *a = hl_exception_stack();
+		for (int i = 0; i < a->size; i++)
+			uprintf(USTR("Called from %s\n"), hl_aptr(a, uchar *)[i]);
 	}
 	fflush(stdout);
 }
@@ -148,7 +174,7 @@ HL_PRIM varray *hl_exception_stack() {
 		void *addr = t->exc_stack_trace[i];
 		uchar sym[512];
 		int size = 512;
-		uchar *str = resolve_symbol_func(addr, sym, &size);
+		uchar *str = hl_setup.resolve_symbol(addr, sym, &size);
 		if( str == NULL ) continue;
 		hl_aptr(a,vbyte*)[pos++] = hl_copy_bytes((vbyte*)str,sizeof(uchar)*(size+1));
 	}
@@ -164,8 +190,8 @@ HL_PRIM int hl_exception_stack_raw( varray *arr ) {
 
 HL_PRIM int hl_call_stack_raw( varray *arr ) {
 	if( !arr )
-		return capture_stack_func(NULL,0);
-	return capture_stack_func(hl_aptr(arr,void*), arr->size);
+		return hl_setup.capture_stack(NULL,0);
+	return hl_setup.capture_stack(hl_aptr(arr,void*), arr->size);
 }
 
 HL_PRIM void hl_rethrow( vdynamic *v ) {
@@ -214,30 +240,40 @@ HL_PRIM HL_NO_OPT void hl_breakpoint() {
 #	pragma optimize( "", on )
 #endif
 
-#ifdef HL_LINUX__
-#include <signal.h>
-static int debugger_present = -1;
-static void _sigtrap_handler(int signum) {
-	debugger_present = 0;
-	signal(SIGTRAP,SIG_DFL);
-}
+#ifdef HL_LINUX
+#include <unistd.h>
+#include <fcntl.h>
 #endif
 
-#ifdef HL_MAC
+#if defined(HL_MAC) && defined(__x86_64__)
 	extern bool is_debugger_attached(void);
+#	define MAC_DEBUG
 #endif
 
 HL_PRIM bool hl_detect_debugger() {
 #	if defined(HL_WIN)
 	return (bool)IsDebuggerPresent();
-#	elif defined(HL_LINUX__)
-	if( debugger_present == -1 ) {
-		debugger_present = 1;
-		signal(SIGTRAP,_sigtrap_handler);
-		raise(SIGTRAP);
+#	elif defined(HL_LINUX)
+	static int debugger_present = -1;
+	if(debugger_present < 0) {
+		char buf[2048];
+		char *tracer_pid;
+		ssize_t num_read;
+		debugger_present = 0;
+		int status_fd = open("/proc/self/status", O_RDONLY);
+		if (status_fd == -1)
+			return 0;
+		num_read = read(status_fd, buf, sizeof(buf));
+		close(status_fd);
+		if (num_read > 0) {
+			buf[num_read] = 0;
+			tracer_pid = strstr(buf, "TracerPid:");
+			if (tracer_pid && atoi(tracer_pid + sizeof("TracerPid:") - 1) > 0)
+				debugger_present = 1;
+		}
 	}
-	return (bool)debugger_present;
-#	elif defined(HL_MAC)
+	return debugger_present == 1;
+#	elif defined(MAC_DEBUG)
 	return is_debugger_attached();
 #	else
 	return false;

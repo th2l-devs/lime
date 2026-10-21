@@ -237,6 +237,16 @@ class AL
 	public static inline var FILTER_BANDPASS:Int = 0x0003;
 	/* AL_SOFT_hold_on_disconnect extension */
 	public static inline var STOP_SOURCES_ON_DISCONNECT_SOFT:Int = 0x19AB;
+	#if lime_openalsoft
+	/* AL_SOFT_direct_channels extension */
+	public static inline var DIRECT_CHANNELS_SOFT:Int = 0x1033;
+	/* AL_SOFT_direct_channels_remix extension */
+	public static inline var DROP_UNMATCHED_SOFT:Int = 0x0001;
+	public static inline var REMIX_UNMATCHED_SOFT:Int = 0x0002;
+	/* AL_SOFT_source_latency extension */
+	public static inline var SAMPLE_OFFSET_LATENCY_SOFT:Int = 0x1200;
+	public static inline var SEC_OFFSET_LATENCY_SOFT:Int = 0x1201;
+	#end
 
 	public static function removeDirectFilter(source:ALSource)
 	{
@@ -1050,6 +1060,30 @@ class AL
 	{
 		#if (lime_cffi && lime_openal && !macro)
 		var result = NativeCFFI.lime_al_get_source3f(source, param);
+		#if hl
+		if (result == null) return [];
+		var _result:Array<Float> = [];
+		for (i in 0...result.length)
+			_result[i] = result[i];
+		return _result;
+		#else
+		return result;
+		#end
+		#else
+		return null;
+		#end
+	}
+
+	/**
+		Reads double precision values of a source, from the `AL_SOFT_source_latency`
+		extension of OpenAL Soft. `SEC_OFFSET_LATENCY_SOFT` gives the playback
+		offset and the output's latency, in seconds. Without the extension, the
+		values are 0.
+	**/
+	public static function getSourcedvSOFT(source:ALSource, param:Int, count:Int = 1):Array<Float>
+	{
+		#if (lime_cffi && lime_openal && !macro)
+		var result = NativeCFFI.lime_al_get_sourcedv_soft(source, param, count);
 		#if hl
 		if (result == null) return [];
 		var _result:Array<Float> = [];

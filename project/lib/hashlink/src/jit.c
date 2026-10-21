@@ -24,6 +24,7 @@
 #endif
 #include <math.h>
 #include <hlmodule.h>
+#include "hlsystem.h"
 
 #ifdef __arm__
 #	error "JIT does not support ARM processors, only x86 and x86-64 are supported, please use HashLink/C native compilation instead"
@@ -117,6 +118,12 @@ typedef enum {
 	MOV16,
 	CMP16,
 	TEST16,
+	// prefetchs
+	PREFETCHT0,
+	PREFETCHT1,
+	PREFETCHT2,
+	PREFETCHNTA,
+	PREFETCHW,
 	// --
 	_CPU_LAST
 } CpuOp;
@@ -259,14 +266,10 @@ static const int RCPU_SCRATCH_REGS[] = { Eax, Ecx, Edx };
 
 #define BREAK()		B(0xCC)
 
-#if defined(HL_64) && defined(HL_VCC)
-#	define JIT_CUSTOM_LONGJUMP
-#endif
-
 static preg _unused = { RUNUSED, 0, 0, NULL };
 static preg *UNUSED = &_unused;
 
-struct jit_ctx {
+struct _jit_ctx {
 	union {
 		unsigned char *b;
 		unsigned int *w;
@@ -299,9 +302,56 @@ struct jit_ctx {
 	hl_debug_infos *debug;
 	int c2hl;
 	int hl2c;
+#ifdef JIT_CUSTOM_LONGJUMP
 	int longjump;
+#endif
 	void *static_functions[8];
+	bool static_function_offset;
+#ifdef WIN64_UNWIND_TABLES
+	int unwind_offset;
+	int nunwind;
+	PRUNTIME_FUNCTION unwind_table;
+#endif
 };
+
+#ifdef WIN64_UNWIND_TABLES
+
+typedef enum _UNWIND_OP_CODES
+{
+	UWOP_PUSH_NONVOL = 0, /* info == register number */
+	UWOP_ALLOC_LARGE,	  /* no info, alloc size in next 2 slots */
+	UWOP_ALLOC_SMALL,	  /* info == size of allocation / 8 - 1 */
+	UWOP_SET_FPREG,		  /* no info, FP = RSP + UNWIND_INFO.FPRegOffset*16 */
+	UWOP_SAVE_NONVOL,	  /* info == register number, offset in next slot */
+	UWOP_SAVE_NONVOL_FAR, /* info == register number, offset in next 2 slots */
+	UWOP_SAVE_XMM128 = 8, /* info == XMM reg number, offset in next slot */
+	UWOP_SAVE_XMM128_FAR, /* info == XMM reg number, offset in next 2 slots */
+	UWOP_PUSH_MACHFRAME	  /* info == 0: no error-code, 1: error-code */
+} UNWIND_CODE_OPS;
+
+void write_uwcode(jit_ctx *ctx, unsigned char offset, UNWIND_CODE_OPS code, unsigned char info)
+{
+	B(offset);
+	B((code) | (info) << 4);
+}
+
+void write_unwind_data(jit_ctx *ctx)
+{
+	// All generated functions use a frame pointer, so the same unwind info can be used for all of them
+	unsigned char version = 1;
+	unsigned char flags = 0;
+	unsigned char CountOfCodes = 2;
+	unsigned char SizeOfProlog = 4;
+	unsigned char FrameRegister = 5; // RBP
+	unsigned char FrameOffset = 0;
+	B((version) | (flags) << 3);
+	B(SizeOfProlog);
+	B(CountOfCodes);
+	B((FrameRegister) | (FrameOffset) << 4);
+	write_uwcode(ctx, 4, UWOP_SET_FPREG, 0);
+	write_uwcode(ctx, 1, UWOP_PUSH_NONVOL, 5);
+}
+#endif
 
 #define jit_exit() { hl_debug_break(); exit(-1); }
 #define jit_error(msg)	_jit_error(ctx,msg,__LINE__)
@@ -310,7 +360,7 @@ struct jit_ctx {
 #	ifdef HL_DEBUG
 #		define error_i64() jit_error("i64-32")
 #	else
-void error_i64() { 
+void error_i64() {
 	printf("The module you are loading is using 64 bit ints that are not supported by the HL32.\nPlease run using HL64 or compile with -D hl-legacy32");
 	jit_exit();
 }
@@ -431,6 +481,7 @@ typedef struct {
 #define FLAG_LONGOP	0x80000000
 #define FLAG_16B	0x40000000
 #define FLAG_8B		0x20000000
+#define FLAG_DUAL   0x10000000
 
 #define RM(op,id) ((op) | (((id)+1)<<8))
 #define GET_RM(op)	(((op) >> ((op) < 0 ? 24 : 8)) & 15)
@@ -445,7 +496,7 @@ static opform OP_FORMS[_CPU_LAST] = {
 	{ "PUSH", 0x50, RM(0xFF,6), 0x68, 0x6A },
 	{ "ADD", 0x03, 0x01, RM(0x81,0), RM(0x83,0) },
 	{ "SUB", 0x2B, 0x29, RM(0x81,5), RM(0x83,5) },
-	{ "IMUL", LONG_OP(0x0FAF) },
+	{ "IMUL", LONG_OP(0x0FAF), 0, 0x69 | FLAG_DUAL, 0x6B | FLAG_DUAL },
 	{ "DIV", RM(0xF7,6), RM(0xF7,6) },
 	{ "IDIV", RM(0xF7,7), RM(0xF7,7) },
 	{ "CDQ", 0x99 },
@@ -501,6 +552,12 @@ static opform OP_FORMS[_CPU_LAST] = {
 	{ "MOV16", OP16(0x8B), OP16(0x89), OP16(0xB8) },
 	{ "CMP16", OP16(0x3B), OP16(0x39) },
 	{ "TEST16", OP16(0x85) },
+	// prefetchs
+	{ "PREFETCHT0", 0, LONG_RM(0x0F18,1) },
+	{ "PREFETCHT1", 0, LONG_RM(0x0F18,2) },
+	{ "PREFETCHT2", 0, LONG_RM(0x0F18,3) },
+	{ "PREFETCHNTA", 0, LONG_RM(0x0F18,0) },
+	{ "PREFETCHW", 0, LONG_RM(0x0F0D,1) },
 };
 
 #ifdef HL_64
@@ -532,7 +589,7 @@ static bool is_reg8( preg *a ) {
 
 static void op( jit_ctx *ctx, CpuOp o, preg *a, preg *b, bool mode64 ) {
 	opform *f = &OP_FORMS[o];
-	int r64 = mode64 && (o != PUSH && o != POP && o != CALL && o != PUSH8) ? 8 : 0;
+	int r64 = mode64 && (o != PUSH && o != POP && o != CALL && o != PUSH8 && o < PREFETCHT0) ? 8 : 0;
 	switch( o ) {
 	case CMP8:
 	case TEST8:
@@ -594,12 +651,14 @@ static void op( jit_ctx *ctx, CpuOp o, preg *a, preg *b, bool mode64 ) {
 			int_val cval = b->holds ? (int_val)b->holds : b->id;
 			// short byte form
 			if( f->r_i8 && IS_SBYTE(cval) ) {
+				if( (f->r_i8&FLAG_DUAL) && a->id > 7 ) r64 |= 4;
 				OP(f->r_i8);
-				MOD_RM(3,GET_RM(f->r_i8)-1,a->id);
+				if( (f->r_i8&FLAG_DUAL) ) MOD_RM(3,a->id,a->id); else MOD_RM(3,GET_RM(f->r_i8)-1,a->id);
 				B((int)cval);
-			} else if( GET_RM(f->r_const) > 0 ) {
+			} else if( GET_RM(f->r_const) > 0 || (f->r_const&FLAG_DUAL) ) {
+				if( (f->r_i8&FLAG_DUAL) && a->id > 7 ) r64 |= 4;
 				OP(f->r_const&0xFF);
-				MOD_RM(3,GET_RM(f->r_const)-1,a->id);
+				if( (f->r_i8&FLAG_DUAL) ) MOD_RM(3,a->id,a->id); else MOD_RM(3,GET_RM(f->r_const)-1,a->id);
 				if( mode64 && IS_64 && o == MOV ) W64(cval); else W((int)cval);
 			} else {
 				ERRIF( f->r_const == 0);
@@ -858,6 +917,7 @@ static int stack_size( hl_type *t ) {
 	case HF32:
 #	endif
 		return sizeof(int_val);
+	case HI64:
 	default:
 		return hl_type_size(t);
 	}
@@ -1057,7 +1117,7 @@ static preg *fetch32( jit_ctx *ctx, vreg *r ) {
 	return fetch(r);
 }
 
-// make sure higher bits are zeroes 
+// make sure higher bits are zeroes
 static preg *alloc_cpu64( jit_ctx *ctx, vreg *r, bool andLoad ) {
 #	ifndef HL_64
 	return alloc_cpu(ctx,r,andLoad);
@@ -1119,8 +1179,9 @@ static preg *copy( jit_ctx *ctx, preg *to, preg *from, int size ) {
 					op32(ctx,SHR,to,pconst(&p,24));
 					break;
 				}
-			} else if( !is_reg8(from) ) {
-				preg *r = alloc_reg(ctx, RCPU_CALL);				
+			}
+			if( !is_reg8(from) ) {
+				preg *r = alloc_reg(ctx, RCPU_CALL);
 				op32(ctx, MOV, r, from);
 				RUNLOCK(r);
 				op32(ctx,MOV8,to,r);
@@ -1231,8 +1292,8 @@ static void store( jit_ctx *ctx, vreg *r, preg *v, bool bind ) {
 }
 
 static void store_result( jit_ctx *ctx, vreg *r ) {
-	switch( r->t->kind ) {
 #	ifndef HL_64
+	switch( r->t->kind ) {
 	case HF64:
 		scratch(r->current);
 		op64(ctx,FSTP,&r->stack,UNUSED);
@@ -1245,11 +1306,13 @@ static void store_result( jit_ctx *ctx, vreg *r ) {
 		scratch(r->current);
 		error_i64();
 		break;
-#	endif
 	default:
+#	endif
 		store(ctx,r,IS_FLOAT(r) ? REG_AT(XMM(0)) : PEAX,true);
+#	ifndef HL_64
 		break;
 	}
+#	endif
 }
 
 static void op_mov( jit_ctx *ctx, vreg *to, vreg *from ) {
@@ -1611,7 +1674,7 @@ static void on_jit_error( const char *msg, int_val line ) {
 	char buf[256];
 	int iline = (int)line;
 	sprintf(buf,"%s (line %d)",msg,iline);
-#ifdef HL_WIN
+#ifdef HL_WIN_DESKTOP
 	MessageBoxA(NULL,buf,"JIT ERROR",MB_OK);
 #else
 	printf("JIT ERROR : %s\n",buf);
@@ -1698,16 +1761,27 @@ static preg *op_binop( jit_ctx *ctx, vreg *dst, vreg *a, vreg *b, hl_op bop ) {
 		case OUMod:
 			{
 				preg *out = bop == OSMod || bop == OUMod ? REG_AT(Edx) : PEAX;
-				preg *r;
-				int jz, jend;
+				preg *r = pb;
+				preg p;
+				int jz, jz1 = 0, jend;
 				if( pa->kind == RCPU && pa->id == Eax ) RLOCK(pa);
-				r = alloc_cpu(ctx,b,true);
+				// ensure b in CPU reg and not in Eax/Edx (for UI8/UI16)
+				if( pb->kind != RCPU || (pb->id == Eax || pb->id == Edx) ) {
+					scratch(REG_AT(Ecx));
+					scratch(pb);
+					load(ctx,REG_AT(Ecx),b);
+					r = REG_AT(Ecx);
+				}
 				// integer div 0 => 0
 				op(ctx,TEST,r,r,is64);
-				XJump_small(JNotZero,jz);
-				op(ctx,XOR,out,out,is64);
-				XJump_small(JAlways,jend);
-				patch_jump(ctx,jz);
+				XJump_small(JZero, jz);
+				// Prevent MIN/-1 overflow exception
+				// OSMod: r = (b == 0 || b == -1) ? 0 : a % b
+				// OSDiv: r = (b == 0 || b == -1) ? a * b : a / b
+				if( bop == OSMod || bop == OSDiv ) {
+					op(ctx, CMP, r, pconst(&p,-1), is64);
+					XJump_small(JEq, jz1);
+				}
 				pa = fetch(a);
 				if( pa->kind != RCPU || pa->id != Eax ) {
 					scratch(PEAX);
@@ -1720,7 +1794,16 @@ static preg *op_binop( jit_ctx *ctx, vreg *dst, vreg *a, vreg *b, hl_op bop ) {
 					op(ctx, XOR, REG_AT(Edx), REG_AT(Edx), is64);
 				else
 					op(ctx, CDQ, UNUSED, UNUSED, is64); // sign-extend Eax into Eax:Edx
-				op(ctx, bop == OUDiv || bop == OUMod ? DIV : IDIV, fetch(b), UNUSED, is64);
+				op(ctx, bop == OUDiv || bop == OUMod ? DIV : IDIV, r, UNUSED, is64);
+				XJump_small(JAlways, jend);
+				patch_jump(ctx, jz);
+				patch_jump(ctx, jz1);
+				if( bop != OSDiv ) {
+					op(ctx, XOR, out, out, is64);
+				} else {
+					load(ctx, out, a);
+					op(ctx, IMUL, out, r, is64);
+				}
 				patch_jump(ctx, jend);
 				if( dst ) store(ctx, dst, out, true);
 				return out;
@@ -1769,6 +1852,7 @@ static preg *op_binop( jit_ctx *ctx, vreg *dst, vreg *a, vreg *b, hl_op bop ) {
 	case HDYN:
 	case HTYPE:
 	case HABSTRACT:
+	case HARRAY:
 #	endif
 		switch( ID2(pa->kind, pb->kind) ) {
 		case ID2(RCPU,RCPU):
@@ -1809,7 +1893,9 @@ static preg *op_binop( jit_ctx *ctx, vreg *dst, vreg *a, vreg *b, hl_op bop ) {
 	case HDYN:
 	case HTYPE:
 	case HABSTRACT:
+	case HARRAY:
 	case HI64:
+	case HGUID:
 		switch( ID2(pa->kind, pb->kind) ) {
 		case ID2(RCPU,RCPU):
 		case ID2(RCPU,RSTACK):
@@ -1818,7 +1904,7 @@ static preg *op_binop( jit_ctx *ctx, vreg *dst, vreg *a, vreg *b, hl_op bop ) {
 			out = pa;
 			break;
 		case ID2(RSTACK,RCPU):
-			if( dst == a ) {
+			if( dst == a && OP_FORMS[o].mem_r ) {
 				op64(ctx, o, pa, pb);
 				dst = NULL;
 				out = pa;
@@ -1844,7 +1930,7 @@ static preg *op_binop( jit_ctx *ctx, vreg *dst, vreg *a, vreg *b, hl_op bop ) {
 		switch( ID2(pa->kind, pb->kind) ) {
 		case ID2(RFPU,RFPU):
 			op64(ctx,o,pa,pb);
-			if( o == COMISD && bop != OJSGt ) {
+			if( (o == COMISD || o == COMISS) && bop != OJSGt ) {
 				int jnotnan;
 				XJump_small(JNParity,jnotnan);
 				switch( bop ) {
@@ -1988,6 +2074,7 @@ static void dyn_value_compare( jit_ctx *ctx, preg *a, preg *b, hl_type *t ) {
 			op64(ctx,COMISD,fa,fb);
 		}
 		break;
+	case HI64:
 	default:
 		// ptr comparison
 		op64(ctx,MOV,a,pmem(&p,a->id,HDYN_VALUE));
@@ -2276,11 +2363,12 @@ static void jit_nops( jit_ctx *ctx ) {
 static void *call_jit_c2hl = NULL;
 static void *call_jit_hl2c = NULL;
 
-static void *callback_c2hl( void **f, hl_type *t, void **args, vdynamic *ret ) {
+static void *callback_c2hl( void *_f, hl_type *t, void **args, vdynamic *ret ) {
 	/*
 		prepare stack and regs according to prepare_call_args, but by reading runtime type information
 		from the function type. The stack and regs will be setup by the trampoline function.
 	*/
+	void **f = (void**)_f;
 	unsigned char stack[MAX_ARGS * 8];
 	call_regs cregs = {0};
 	if( t->fun->nargs > MAX_ARGS )
@@ -2320,15 +2408,14 @@ static void *callback_c2hl( void **f, hl_type *t, void **args, vdynamic *ret ) {
 				*(int_val*)store = *(int*)v;
 				break;
 			case HF32:
-				{
-					double d = (double)*(float*)v;
-					*(double*)store = d;
-				}
+				*(void**)store = 0;
+				*(float*)store = *(float*)v;
 				break;
 			case HF64:
 				*(double*)store = *(double*)v;
 				break;
 			case HI64:
+			case HGUID:
 				*(int64*)store = *(int64*)v;
 				break;
 			default:
@@ -2355,6 +2442,7 @@ static void *callback_c2hl( void **f, hl_type *t, void **args, vdynamic *ret ) {
 				*(double*)store = *(double*)v;
 				break;
 			case HI64:
+			case HGUID:
 				*(int64*)store = *(int64*)v;
 				break;
 			default:
@@ -2372,6 +2460,10 @@ static void *callback_c2hl( void **f, hl_type *t, void **args, vdynamic *ret ) {
 	case HBOOL:
 		ret->v.i = ((int (*)(void *, void *, void *))call_jit_c2hl)(*f, (void**)&stack + pos, &stack);
 		return &ret->v.i;
+	case HI64:
+	case HGUID:
+		ret->v.i64 = ((int64 (*)(void *, void *, void *))call_jit_c2hl)(*f, (void**)&stack + pos, &stack);
+		return &ret->v.i64;
 	case HF32:
 		ret->v.f = ((float (*)(void *, void *, void *))call_jit_c2hl)(*f, (void**)&stack + pos, &stack);
 		return &ret->v.f;
@@ -2394,7 +2486,7 @@ static void jit_c2hl( jit_ctx *ctx ) {
 	op64(ctx,MOV,PEBP,PESP);
 
 #	ifdef HL_64
-	
+
 	fptr = REG_AT(R10);
 	stack = PEAX;
 	stend = REG_AT(R11);
@@ -2486,6 +2578,9 @@ static void *jit_wrapper_ptr( vclosure_wrapper *c, char *stack_args, void **regs
 	case HI32:
 	case HBOOL:
 		return (void*)(int_val)hl_dyn_casti(&ret,&hlt_dyn,tret);
+	case HI64:
+	case HGUID:
+		return (void*)(int_val)hl_dyn_casti64(&ret,&hlt_dyn);
 	default:
 		return hl_dyn_castp(&ret,&hlt_dyn,tret);
 	}
@@ -2529,7 +2624,7 @@ static void jit_hl2c( jit_ctx *ctx ) {
 	//		case HF32: case HF64: return jit_wrapper_d(arg0,&args);
 	//		default: return jit_wrapper_ptr(arg0,&args);
 	//		}
-	if( !IS_64 ) 
+	if( !IS_64 )
 		op64(ctx,MOV,cl,pmem(&p,Ebp,HL_WSIZE*2)); // load arg0
 	op64(ctx,MOV,tmp,pmem(&p,cl->id,0)); // ->t
 	op64(ctx,MOV,tmp,pmem(&p,tmp->id,HL_WSIZE)); // ->fun
@@ -2541,7 +2636,7 @@ static void jit_hl2c( jit_ctx *ctx ) {
 	op32(ctx,CMP,tmp,pconst(&p,HF32));
 	XJump_small(JEq,jfloat2);
 
-	// 64 bits : ESP + EIP (+WIN64PAD) 
+	// 64 bits : ESP + EIP (+WIN64PAD)
 	// 32 bits : ESP + EIP + PARAM0
 	int args_pos = IS_64 ? ((IS_WINCALL64 ? 32 : 0) + HL_WSIZE * 2) : (HL_WSIZE*3);
 
@@ -2576,7 +2671,7 @@ static void jit_hl2c( jit_ctx *ctx ) {
 // setjump storage.
 //
 // Another more reliable way of handling this would be to use RtlAddFunctionTable
-// but this would require complex creation of unwind info
+// but some platform does not have it.
 static void jit_longjump( jit_ctx *ctx ) {
 	preg *buf = REG_AT(CALL_REGS[0]);
 	preg *ret = REG_AT(CALL_REGS[1]);
@@ -2652,7 +2747,14 @@ static int jit_build( jit_ctx *ctx, void (*fbuild)( jit_ctx *) ) {
 	jit_nops(ctx);
 	pos = BUF_POS();
 	fbuild(ctx);
+	int endPos = BUF_POS();
 	jit_nops(ctx);
+#ifdef WIN64_UNWIND_TABLES
+	int fid = ctx->nunwind++;
+	ctx->unwind_table[fid].BeginAddress = pos;
+	ctx->unwind_table[fid].EndAddress = endPos;
+	ctx->unwind_table[fid].UnwindData = ctx->unwind_offset;
+#endif
 	return pos;
 }
 
@@ -2667,6 +2769,14 @@ static void hl_jit_init_module( jit_ctx *ctx, hl_module *m ) {
 		jit_buf(ctx);
 		*ctx->buf.d++ = m->code->floats[i];
 	}
+#ifdef WIN64_UNWIND_TABLES
+	jit_buf(ctx);
+	ctx->unwind_offset = BUF_POS();
+	write_unwind_data(ctx);
+
+	ctx->unwind_table = malloc(sizeof(RUNTIME_FUNCTION) * (m->code->nfunctions + 10));
+	memset(ctx->unwind_table, 0, sizeof(RUNTIME_FUNCTION) * (m->code->nfunctions + 10));
+#endif
 }
 
 void hl_jit_init( jit_ctx *ctx, hl_module *m ) {
@@ -2692,6 +2802,9 @@ static void *get_dyncast( hl_type *t ) {
 		return hl_dyn_castf;
 	case HF64:
 		return hl_dyn_castd;
+	case HI64:
+	case HGUID:
+		return hl_dyn_casti64;
 	case HI32:
 	case HUI16:
 	case HUI8:
@@ -2708,6 +2821,9 @@ static void *get_dynset( hl_type *t ) {
 		return hl_dyn_setf;
 	case HF64:
 		return hl_dyn_setd;
+	case HI64:
+	case HGUID:
+		return hl_dyn_seti64;
 	case HI32:
 	case HUI16:
 	case HUI8:
@@ -2724,6 +2840,9 @@ static void *get_dynget( hl_type *t ) {
 		return hl_dyn_getf;
 	case HF64:
 		return hl_dyn_getd;
+	case HI64:
+	case HGUID:
+		return hl_dyn_geti64;
 	case HI32:
 	case HUI16:
 	case HUI8:
@@ -2761,9 +2880,48 @@ static void make_dyn_cast( jit_ctx *ctx, vreg *dst, vreg *v ) {
 	int size;
 	preg p;
 	preg *tmp;
+	if( v->t->kind == HNULL && v->t->tparam->kind == dst->t->kind ) {
+		int jnull, jend;
+		preg *out;
+		switch( dst->t->kind ) {
+		case HUI8:
+		case HUI16:
+		case HI32:
+		case HBOOL:
+		case HI64:
+		case HGUID:
+			tmp = alloc_cpu(ctx, v, true);
+			op64(ctx, TEST, tmp, tmp);
+			XJump_small(JZero, jnull);
+			op64(ctx, MOV, tmp, pmem(&p,tmp->id,8));
+			XJump_small(JAlways, jend);
+			patch_jump(ctx, jnull);
+			op64(ctx, XOR, tmp, tmp);
+			patch_jump(ctx, jend);
+			store(ctx, dst, tmp, true);
+			return;
+		case HF32:
+		case HF64:
+			tmp = alloc_cpu(ctx, v, true);
+			out = alloc_fpu(ctx, dst, false);
+			op64(ctx, TEST, tmp, tmp);
+			XJump_small(JZero, jnull);
+			op64(ctx, dst->t->kind == HF32 ? MOVSS : MOVSD, out, pmem(&p,tmp->id,8));
+			XJump_small(JAlways, jend);
+			patch_jump(ctx, jnull);
+			op64(ctx, XORPD, out, out);
+			patch_jump(ctx, jend);
+			store(ctx, dst, out, true);
+			return;
+		default:
+			break;
+		}
+	}
 	switch( dst->t->kind ) {
 	case HF32:
 	case HF64:
+	case HI64:
+	case HGUID:
 		size = begin_native_call(ctx, 2);
 		set_native_arg(ctx, pconst64(&p,(int_val)v->t));
 		break;
@@ -2829,7 +2987,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 		vreg *r = R(i);
 		int creg = select_call_reg(&cregs,r->t,i);
 		if( creg < 0 || IS_WINCALL64 ) {
-			// use existing stack storage 
+			// use existing stack storage
 			r->stackPos = argsSize + HL_WSIZE * 2;
 			argsSize += stack_size(r->t);
 		} else {
@@ -2853,6 +3011,9 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 	ctx->totalRegsSize = size;
 	jit_buf(ctx);
 	ctx->functionPos = BUF_POS();
+	// make sure currentPos is > 0 before any reg allocations happen
+	// otherwise `alloc_reg` thinks that all registers are locked
+	ctx->currentPos = 1;
 	op_enter(ctx);
 #	ifdef HL_64
 	{
@@ -2884,7 +3045,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 		ctx->currentPos = opCount + 1;
 		jit_buf(ctx);
 #		ifdef JIT_DEBUG
-		{
+		if( opCount == 0 || f->ops[opCount-1].op != OAsm ) {
 			int uid = opCount + (f->findex<<16);
 			op32(ctx, PUSH, pconst(&p,uid), UNUSED);
 			op64(ctx, ADD, PESP, pconst(&p,HL_WSIZE));
@@ -2982,7 +3143,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					preg *pb = alloc_cpu(ctx,ra,true);
 					op64(ctx,XOR,pa,pa);
 					op64(ctx,SUB,pa,pb);
-					store(ctx,dst,pa,true);					
+					store(ctx,dst,pa,true);
 #					else
 					error_i64();
 #					endif
@@ -3070,10 +3231,15 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 			break;
 		case OToSFloat:
 			if( ra == dst ) break;
-			if( ra->t->kind == HI32 ) {
-				preg *r = alloc_cpu(ctx,ra,true);
-				preg *w = alloc_fpu(ctx,dst,false);
-				op32(ctx,dst->t->kind == HF64 ? CVTSI2SD : CVTSI2SS,w,r);
+			if (ra->t->kind == HI32 || ra->t->kind == HUI16 || ra->t->kind == HUI8) {
+				preg* r = alloc_cpu(ctx, ra, true);
+				preg* w = alloc_fpu(ctx, dst, false);
+				op32(ctx, dst->t->kind == HF64 ? CVTSI2SD : CVTSI2SS, w, r);
+				store(ctx, dst, w, true);
+			} else if (ra->t->kind == HI64 ) {
+				preg* r = alloc_cpu(ctx, ra, true);
+				preg* w = alloc_fpu(ctx, dst, false);
+				op64(ctx, dst->t->kind == HF64 ? CVTSI2SD : CVTSI2SS, w, r);
 				store(ctx, dst, w, true);
 			} else if( ra->t->kind == HF64 && dst->t->kind == HF32 ) {
 				preg *r = alloc_fpu(ctx,ra,true);
@@ -3122,7 +3288,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				op32(ctx, CVTSS2SI, w, r);
 				op32(ctx, LDMXCSR, pmem(&p, Esp, -4), UNUSED);
 				store(ctx, dst, w, true);
-			} else if( dst->t->kind == HI64 && ra->t->kind == HI32 ) {
+			} else if( (dst->t->kind == HI64 || dst->t->kind == HGUID) && ra->t->kind == HI32 ) {
 				if( ra->current != PEAX ) {
 					op32(ctx, MOV, PEAX, fetch(ra));
 					scratch(PEAX);
@@ -3180,7 +3346,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				case HF64:
 				case HF32:
 #					ifdef HL_64
-					op64(ctx,dst->t->kind == HF32 ? MOVSS : MOVSD,alloc_fpu(ctx,dst,false),pcodeaddr(&p,o->p2 * 8));
+					op64(ctx,dst->t->kind == HF32 ? CVTSD2SS : MOVSD,alloc_fpu(ctx,dst,false),pcodeaddr(&p,o->p2 * 8));
 #					else
 					op64(ctx,dst->t->kind == HF32 ? MOVSS : MOVSD,alloc_fpu(ctx,dst,false),paddr(&p,m->code->floats + o->p2));
 #					endif
@@ -3245,7 +3411,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				ctx->calls = j;
 
 				set_native_arg(ctx,pconst64(&p,RESERVE_ADDRESS));
-				set_native_arg(ctx,pconst64(&p,(int_val)m->code->functions[m->functions_indexes[o->p2]].type));				
+				set_native_arg(ctx,pconst64(&p,(int_val)m->code->functions[m->functions_indexes[o->p2]].type));
 				call_native(ctx,hl_alloc_closure_ptr,size);
 				store(ctx,dst,PEAX,true);
 			}
@@ -3335,7 +3501,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				{
 					int regids[64];
 					preg *pc = REG_AT(CALL_REGS[0]);
-					vreg *sc = R(f->nregs); // scratch register that we temporary rebind					
+					vreg *sc = R(f->nregs); // scratch register that we temporary rebind
 					if( o->p3 >= 63 ) jit_error("assert");
 					memcpy(regids + 1, o->extra, o->p3 * sizeof(int));
 					regids[0] = f->nregs;
@@ -3374,13 +3540,22 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					error_i64();
 					break;
 				}
-#				endif 
+#				endif
 				switch( ra->t->kind ) {
 				case HOBJ:
 				case HSTRUCT:
 					{
 						hl_runtime_obj *rt = hl_get_obj_rt(ra->t);
 						preg *rr = alloc_cpu(ctx,ra, true);
+						if( dst->t->kind == HSTRUCT ) {
+							hl_type *ft = hl_obj_field_fetch(ra->t,o->p3)->t;
+							if( ft->kind == HPACKED ) {
+								preg *r = alloc_reg(ctx,RCPU);
+								op64(ctx,LEA,r,pmem(&p,(CpuReg)rr->id,rt->fields_indexes[o->p3]));
+								store(ctx,dst,r,true);
+								break;
+							}
+						}
 						copy_to(ctx,dst,pmem(&p, (CpuReg)rr->id, rt->fields_indexes[o->p3]));
 					}
 					break;
@@ -3388,13 +3563,14 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					// ASM for --> if( hl_vfields(o)[f] ) r = *hl_vfields(o)[f]; else r = hl_dyn_get(o,hash(field),vt)
 					{
 						int jhasfield, jend, size;
+						bool need_type = !(IS_FLOAT(dst) || dst->t->kind == HI64);
 						preg *v = alloc_cpu_call(ctx,ra);
 						preg *r = alloc_reg(ctx,RCPU);
 						op64(ctx,MOV,r,pmem(&p,v->id,sizeof(vvirtual)+HL_WSIZE*o->p3));
 						op64(ctx,TEST,r,r);
 						XJump_small(JNotZero,jhasfield);
-						size = begin_native_call(ctx, 3);
-						set_native_arg(ctx,pconst64(&p,(int_val)dst->t));
+						size = begin_native_call(ctx, need_type ? 3 : 2);
+						if( need_type ) set_native_arg(ctx,pconst64(&p,(int_val)dst->t));
 						set_native_arg(ctx,pconst64(&p,(int_val)ra->t->virt->fields[o->p3].hashed_name));
 						set_native_arg(ctx,v);
 						call_native(ctx,get_dynget(dst->t),size);
@@ -3420,6 +3596,23 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					{
 						hl_runtime_obj *rt = hl_get_obj_rt(dst->t);
 						preg *rr = alloc_cpu(ctx, dst, true);
+						if( rb->t->kind == HSTRUCT ) {
+							hl_type *ft = hl_obj_field_fetch(dst->t,o->p2)->t;
+							if( ft->kind == HPACKED ) {
+								hl_runtime_obj *frt = hl_get_obj_rt(ft->tparam);
+								preg *prb = alloc_cpu(ctx, rb, true);
+								preg *tmp = alloc_reg(ctx, RCPU_CALL);
+								int offset = 0;
+								while( offset < frt->size ) {
+									int remain = frt->size - offset;
+									int copy_size = remain >= HL_WSIZE ? HL_WSIZE : (remain >= 4 ? 4 : (remain >= 2 ? 2 : 1));
+									copy(ctx, tmp, pmem(&p, (CpuReg)prb->id, offset), copy_size);
+									copy(ctx, pmem(&p, (CpuReg)rr->id, rt->fields_indexes[o->p2]+offset), tmp, copy_size);
+									offset += copy_size;
+								}
+								break;
+							}
+						}
 						copy_from(ctx, pmem(&p, (CpuReg)rr->id, rt->fields_indexes[o->p2]), rb);
 					}
 					break;
@@ -3439,6 +3632,11 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 							size = begin_native_call(ctx,3);
 							set_native_arg_fpu(ctx, fetch(rb), rb->t->kind == HF32);
 							break;
+						case HI64:
+						case HGUID:
+							size = begin_native_call(ctx,3);
+							set_native_arg(ctx, fetch(rb));
+							break;
 						default:
 							size = begin_native_call(ctx, 4);
 							set_native_arg(ctx, fetch(rb));
@@ -3450,6 +3648,8 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 #						else
 						switch( rb->t->kind ) {
 						case HF64:
+						case HI64:
+						case HGUID:
 							size = pad_before_call(ctx,HL_WSIZE*2 + sizeof(double));
 							push_reg(ctx,rb);
 							break;
@@ -3487,6 +3687,15 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				vreg *r = R(0);
 				hl_runtime_obj *rt = hl_get_obj_rt(r->t);
 				preg *rr = alloc_cpu(ctx,r, true);
+				if( dst->t->kind == HSTRUCT ) {
+					hl_type *ft = hl_obj_field_fetch(r->t,o->p2)->t;
+					if( ft->kind == HPACKED ) {
+						preg *r = alloc_reg(ctx,RCPU);
+						op64(ctx,LEA,r,pmem(&p,(CpuReg)rr->id,rt->fields_indexes[o->p2]));
+						store(ctx,dst,r,true);
+						break;
+					}
+				}
 				copy_to(ctx,dst,pmem(&p, (CpuReg)rr->id, rt->fields_indexes[o->p2]));
 			}
 			break;
@@ -3495,6 +3704,23 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				vreg *r = R(0);
 				hl_runtime_obj *rt = hl_get_obj_rt(r->t);
 				preg *rr = alloc_cpu(ctx, r, true);
+				if( ra->t->kind == HSTRUCT ) {
+					hl_type *ft = hl_obj_field_fetch(r->t,o->p1)->t;
+					if( ft->kind == HPACKED ) {
+						hl_runtime_obj *frt = hl_get_obj_rt(ft->tparam);
+						preg *pra = alloc_cpu(ctx, ra, true);
+						preg *tmp = alloc_reg(ctx, RCPU_CALL);
+						int offset = 0;
+						while( offset < frt->size ) {
+							int remain = frt->size - offset;
+							int copy_size = remain >= HL_WSIZE ? HL_WSIZE : (remain >= 4 ? 4 : (remain >= 2 ? 2 : 1));
+							copy(ctx, tmp, pmem(&p, (CpuReg)pra->id, offset), copy_size);
+							copy(ctx, pmem(&p, (CpuReg)rr->id, rt->fields_indexes[o->p1]+offset), tmp, copy_size);
+							offset += copy_size;
+						}
+						break;
+					}
+				}
 				copy_from(ctx, pmem(&p, (CpuReg)rr->id, rt->fields_indexes[o->p1]), ra);
 			}
 			break;
@@ -3539,6 +3765,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					int paramsSize;
 					int jhasfield, jend;
 					bool need_dyn;
+					bool obj_in_args = false;
 					vreg *obj = R(o->extra[0]);
 					preg *v = alloc_cpu_call(ctx,obj);
 					preg *r = alloc_reg(ctx,RCPU_CALL);
@@ -3563,7 +3790,10 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 						vreg *a = R(o->extra[i+1]);
 						if( hl_is_ptr(a->t) ) {
 							op64(ctx,MOV,pmem(&p,r->id,i*HL_WSIZE),alloc_cpu(ctx,a,true));
-							if( a->current != v ) RUNLOCK(a->current);
+							if( a->current != v ) {
+								RUNLOCK(a->current);
+							} else
+								obj_in_args = true;
 						} else {
 							preg *r2 = alloc_reg(ctx,RCPU);
 							op64(ctx,LEA,r2,&a->stack);
@@ -3600,15 +3830,30 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					patch_jump(ctx,jhasfield);
 					restore_regs(ctx);
 
-					/*
-						o = o->value hack
-					*/
-					if( v->holds ) v->holds->current = NULL;
-					obj->current = v;
-					v->holds = obj;
-					op64(ctx,MOV,v,pmem(&p,v->id,HL_WSIZE));
+					if( !obj_in_args ) {
+						// o = o->value hack
+						if( v->holds ) v->holds->current = NULL;
+						obj->current = v;
+						v->holds = obj;
+						op64(ctx,MOV,v,pmem(&p,v->id,HL_WSIZE));
+						size = prepare_call_args(ctx,o->p3,o->extra,ctx->vregs,0);
+					} else {
+						// keep o->value in R(f->nregs)
+						int regids[64];
+						preg *pc = alloc_reg(ctx,RCPU_CALL);
+						vreg *sc = R(f->nregs); // scratch register that we temporary rebind
+						if( o->p3 >= 63 ) jit_error("assert");
+						memcpy(regids, o->extra, o->p3 * sizeof(int));
+						regids[0] = f->nregs;
+						sc->size = HL_WSIZE;
+						sc->t = &hlt_dyn;
+						op64(ctx, MOV, pc, pmem(&p,v->id,HL_WSIZE));
+						scratch(pc);
+						sc->current = pc;
+						pc->holds = sc;
+						size = prepare_call_args(ctx,o->p3,regids,ctx->vregs,0);
+					}
 
-					size = prepare_call_args(ctx,o->p3,o->extra,ctx->vregs,0);
 					op_call(ctx,r,size);
 					discard_regs(ctx, false);
 					store_result(ctx, dst);
@@ -3649,6 +3894,11 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 			break;
 		case OGetMem:
 			{
+				#ifndef HL_64
+				if (dst->t->kind == HI64) {
+					error_i64();
+				}
+				#endif
 				preg *base = alloc_cpu(ctx, ra, true);
 				preg *offset = alloc_cpu64(ctx, rb, true);
 				store(ctx, dst, pmem2(&p,base->id,offset->id,1,0), false);
@@ -3688,6 +3938,11 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					value = alloc_fpu(ctx, rb, true);
 					op32(ctx,MOVSD,pmem2(&p,base->id,offset->id,1,0),value);
 					break;
+				case HI64:
+				case HGUID:
+					value = alloc_cpu(ctx, rb, true);
+					op64(ctx,MOV,pmem2(&p,base->id,offset->id,1,0),value);
+					break;
 				default:
 					ASSERT(rb->t->kind);
 					break;
@@ -3718,19 +3973,62 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 		case OGetArray:
 			{
 				preg *rdst = IS_FLOAT(dst) ? alloc_fpu(ctx,dst,false) : alloc_cpu(ctx,dst,false);
-				copy(ctx, rdst, pmem2(&p,alloc_cpu(ctx,ra,true)->id,alloc_cpu64(ctx,rb,true)->id,hl_type_size(dst->t),sizeof(varray)), dst->size);
-				store(ctx,dst,dst->current,false);
+				if( ra->t->kind == HABSTRACT ) {
+					int osize;
+					bool isRead = dst->t->kind != HOBJ && dst->t->kind != HSTRUCT;
+					if( isRead )
+						osize = sizeof(void*);
+					else {
+						hl_runtime_obj *rt = hl_get_obj_rt(dst->t);
+						osize = rt->size;
+					}
+					preg *idx = alloc_cpu64(ctx, rb, true);
+					op64(ctx, IMUL, idx, pconst(&p,osize));
+					op64(ctx, isRead?MOV:LEA, rdst, pmem2(&p,alloc_cpu(ctx,ra, true)->id,idx->id,1,0));
+					store(ctx,dst,dst->current,false);
+					scratch(idx);
+				} else {
+					copy(ctx, rdst, pmem2(&p,alloc_cpu(ctx,ra,true)->id,alloc_cpu64(ctx,rb,true)->id,hl_type_size(dst->t),sizeof(varray)), dst->size);
+					store(ctx,dst,dst->current,false);
+				}
 			}
 			break;
 		case OSetArray:
 			{
-				preg *rrb = IS_FLOAT(rb) ? alloc_fpu(ctx,rb,true) : alloc_cpu(ctx,rb,true);
-				copy(ctx, pmem2(&p,alloc_cpu(ctx,dst,true)->id,alloc_cpu64(ctx,ra,true)->id,hl_type_size(rb->t),sizeof(varray)), rrb, rb->size);
+				if( dst->t->kind == HABSTRACT ) {
+					int osize;
+					bool isWrite = rb->t->kind != HOBJ && rb->t->kind != HSTRUCT;
+					if( isWrite ) {
+						osize = sizeof(void*);
+					} else {
+						hl_runtime_obj *rt = hl_get_obj_rt(rb->t);
+						osize = rt->size;
+					}
+					preg *pdst = alloc_cpu(ctx,dst,true);
+					preg *pra = alloc_cpu64(ctx,ra,true);
+					op64(ctx, IMUL, pra, pconst(&p,osize));
+					op64(ctx, ADD, pdst, pra);
+					scratch(pra);
+					preg *prb = alloc_cpu(ctx,rb,true);
+					preg *tmp = alloc_reg(ctx, RCPU_CALL);
+					int offset = 0;
+					while( offset < osize ) {
+						int remain = osize - offset;
+						int copy_size = remain >= HL_WSIZE ? HL_WSIZE : (remain >= 4 ? 4 : (remain >= 2 ? 2 : 1));
+						copy(ctx, tmp, pmem(&p, prb->id, offset), copy_size);
+						copy(ctx, pmem(&p, pdst->id, offset), tmp, copy_size);
+						offset += copy_size;
+					}
+					scratch(pdst);
+				} else  {
+					preg *rrb = IS_FLOAT(rb) ? alloc_fpu(ctx,rb,true) : alloc_cpu(ctx,rb,true);
+					copy(ctx, pmem2(&p,alloc_cpu(ctx,dst,true)->id,alloc_cpu64(ctx,ra,true)->id,hl_type_size(rb->t),sizeof(varray)), rrb, rb->size);
+				}
 			}
 			break;
 		case OArraySize:
 			{
-				op32(ctx,MOV,alloc_cpu(ctx,dst,false),pmem(&p,alloc_cpu(ctx,ra,true)->id,HL_WSIZE*2));
+				op32(ctx,MOV,alloc_cpu(ctx,dst,false),pmem(&p,alloc_cpu(ctx,ra,true)->id,ra->t->kind == HABSTRACT ? HL_WSIZE + 4 : HL_WSIZE*2));
 				store(ctx,dst,dst->current,false);
 			}
 			break;
@@ -3866,19 +4164,35 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 
 				hl_opcode *next = f->ops + opCount + 1;
 				bool null_field_access = false;
-				if( next->op == OField && next->p2 == o->p1 ) {
+				int hashed_name = 0;
+				// skip const and operation between nullcheck and access
+				while( (next < f->ops + f->nops - 1) && (next->op >= OInt && next->op <= ODecr) ) {
+					next++;
+				}
+				if( (next->op == OField && next->p2 == o->p1) || (next->op == OSetField && next->p1 == o->p1) ) {
+					int fid = next->op == OField ? next->p3 : next->p2;
 					hl_obj_field *f = NULL;
 					if( dst->t->kind == HOBJ || dst->t->kind == HSTRUCT )
-						f = hl_obj_field_fetch(dst->t, next->p3);
+						f = hl_obj_field_fetch(dst->t, fid);
 					else if( dst->t->kind == HVIRTUAL )
-						f = dst->t->virt->fields + next->p3;
+						f = dst->t->virt->fields + fid;
 					if( f == NULL ) ASSERT(dst->t->kind);
- 					null_field_access = true;
+					null_field_access = true;
+					hashed_name = f->hashed_name;
+				} else if( (next->op >= OCall1 && next->op <= OCallN) && next->p3 == o->p1 ) {
+					int fid = next->p2 < 0 ? -1 : ctx->m->functions_indexes[next->p2];
+					hl_function *cf = ctx->m->code->functions + fid;
+					const uchar *name = fun_field_name(cf);
+					null_field_access = true;
+					hashed_name = hl_hash_gen(name, true);
+				}
+
+				if( null_field_access ) {
 					pad_before_call(ctx, HL_WSIZE);
-					if( f->hashed_name >= 0 && f->hashed_name < 256 )
-						op64(ctx,PUSH8,pconst(&p,f->hashed_name),UNUSED);
+					if( hashed_name >= 0 && hashed_name < 256 )
+						op64(ctx,PUSH8,pconst(&p,hashed_name),UNUSED);
 					else
-						op32(ctx,PUSH,pconst(&p,f->hashed_name),UNUSED);
+						op32(ctx,PUSH,pconst(&p,hashed_name),UNUSED);
 				} else {
 					pad_before_call(ctx, 0);
 				}
@@ -3901,7 +4215,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 			{
 				int size;
 #				ifdef HL_64
-				if( IS_FLOAT(dst) ) {
+				if( IS_FLOAT(dst) || dst->t->kind == HI64 ) {
 					size = begin_native_call(ctx,2);
 				} else {
 					size = begin_native_call(ctx,3);
@@ -3912,7 +4226,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 #				else
 				preg *r;
 				r = alloc_reg(ctx,RCPU);
-				if( IS_FLOAT(dst) ) {
+				if( IS_FLOAT(dst) || dst->t->kind == HI64 ) {
 					size = pad_before_call(ctx,HL_WSIZE*2);
 				} else {
 					size = pad_before_call(ctx,HL_WSIZE*3);
@@ -3940,6 +4254,14 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					set_native_arg(ctx,fetch(dst));
 					call_native(ctx,get_dynset(rb->t),size);
 					break;
+				case HI64:
+				case HGUID:
+					size = begin_native_call(ctx, 3);
+					set_native_arg(ctx,fetch(rb));
+					set_native_arg(ctx,pconst64(&p,hl_hash_gen(hl_get_ustring(m->code,o->p2),true)));
+					set_native_arg(ctx,fetch(dst));
+					call_native(ctx,get_dynset(rb->t),size);
+					break;
 				default:
 					size = begin_native_call(ctx,4);
 					set_native_arg(ctx,fetch(rb));
@@ -3959,6 +4281,8 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 					call_native(ctx,get_dynset(rb->t),size);
 					break;
 				case HF64:
+				case HI64:
+				case HGUID:
 					size = pad_before_call(ctx, HL_WSIZE*2 + sizeof(double));
 					push_reg(ctx,rb);
 					op32(ctx,PUSH,pconst64(&p,hl_hash_gen(hl_get_ustring(m->code,o->p2),true)),UNUSED);
@@ -4010,6 +4334,13 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				op64(ctx,MOV,pmem(&p,treg->id,offset),trap);
 
 				/*
+					trap E,@catch
+					catch g
+					catch g2
+					...
+					@:catch
+
+					// Before haxe 5
 					This is a bit hackshish : we want to detect the type of exception filtered by the catch so we check the following
 					sequence of HL opcodes:
 
@@ -4021,13 +4352,15 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 
 					??? is expected to be hl.BaseType.check
 				*/
+				hl_opcode *cat = f->ops + opCount + 1;
 				hl_opcode *next = f->ops + opCount + 1 + o->p2;
 				hl_opcode *next2 = f->ops + opCount + 2 + o->p2;
-				if( next->op == OGetGlobal && next2->op == OCall2 && next2->p3 == next->p1 && dst->stack.id == (int)(int_val)next2->extra ) {
-					hl_type *gt = m->code->globals[next->p2];
+				if( cat->op == OCatch || (next->op == OGetGlobal && next2->op == OCall2 && next2->p3 == next->p1 && dst->stack.id == (int)(int_val)next2->extra) ) {
+					int gindex = cat->op == OCatch ? cat->p1 : next->p2;
+					hl_type *gt = m->code->globals[gindex];
 					while( gt->kind == HOBJ && gt->obj->super ) gt = gt->obj->super;
 					if( gt->kind == HOBJ && gt->obj->nfields && gt->obj->fields[0].t->kind == HTYPE ) {
-						void *addr = m->globals_data + m->globals_indexes[next->p2];
+						void *addr = m->globals_data + m->globals_indexes[gindex];
 #						ifdef HL_64
 						op64(ctx,MOV,treg,pconst64(&p,(int_val)addr));
 						op64(ctx,MOV,treg,pmem(&p,treg->id,0));
@@ -4041,9 +4374,20 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 				}
 				op64(ctx,MOV,pmem(&p,Esp,(int)(int_val)&t->tcheck),treg);
 
+				// On Win64 setjmp actually takes two arguments
+				// the jump buffer and the frame pointer (or the stack pointer if there is no FP)
+#if defined(HL_WIN) && defined(HL_64)
+				size = begin_native_call(ctx, 2);
+				set_native_arg(ctx, REG_AT(Ebp));
+#else
 				size = begin_native_call(ctx, 1);
+#endif
 				set_native_arg(ctx,trap);
+#ifdef HL_MINGW
+				call_native(ctx,_setjmp,size);
+#else
 				call_native(ctx,setjmp,size);
+#endif
 				op64(ctx,TEST,PEAX,PEAX);
 				XJump_small(JZero,jenter);
 				op64(ctx,ADD,PESP,pconst(&p,trap_size));
@@ -4148,6 +4492,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 			break;
 		case OAssert:
 			{
+				pad_before_call(ctx, 0);
 				jlist *j = (jlist*)hl_malloc(&ctx->galloc,sizeof(jlist));
 				j->pos = BUF_POS();
 				j->target = -2;
@@ -4159,6 +4504,82 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 			}
 			break;
 		case ONop:
+			break;
+		case OPrefetch:
+			{
+				preg *r = alloc_cpu(ctx, dst, true);
+				if( o->p2 > 0 ) {
+					switch( dst->t->kind ) {
+					case HOBJ:
+					case HSTRUCT:
+						{
+							hl_runtime_obj *rt = hl_get_obj_rt(dst->t);
+							preg *r2 = alloc_reg(ctx, RCPU);
+							op64(ctx, LEA, r2, pmem(&p, r->id, rt->fields_indexes[o->p2-1]));
+							r = r2;
+						}
+						break;
+					default:
+						ASSERT(dst->t->kind);
+						break;
+					}
+				}
+				switch( o->p3 ) {
+				case 0:
+					op64(ctx, PREFETCHT0, pmem(&p,r->id,0), UNUSED);
+					break;
+				case 1:
+					op64(ctx, PREFETCHT1, pmem(&p,r->id,0), UNUSED);
+					break;
+				case 2:
+					op64(ctx, PREFETCHT2, pmem(&p,r->id,0), UNUSED);
+					break;
+				case 3:
+					op64(ctx, PREFETCHNTA, pmem(&p,r->id,0), UNUSED);
+					break;
+				case 4:
+					op64(ctx, PREFETCHW, pmem(&p,r->id,0), UNUSED);
+					break;
+				default:
+					ASSERT(o->p3);
+					break;
+				}
+			}
+			break;
+		case OAsm:
+			{
+				switch( o->p1 ) {
+				case 0: // byte output
+					B(o->p2);
+					break;
+				case 1: // scratch cpu reg
+					scratch(REG_AT(o->p2));
+					break;
+				case 2: // read vm reg
+					rb--;
+					copy(ctx, REG_AT(o->p2), &rb->stack, rb->size);
+					scratch(REG_AT(o->p2));
+					break;
+				case 3: // write vm reg
+					rb--;
+					copy(ctx, &rb->stack, REG_AT(o->p2), rb->size);
+					scratch(rb->current);
+					break;
+				case 4:
+					if( ctx->totalRegsSize != 0 )
+						hl_fatal("Asm naked function should not have local variables");
+					if( opCount != 0 )
+						hl_fatal("Asm naked function should be on first opcode");
+					ctx->buf.b -= BUF_POS() - ctx->functionPos; // reset to our function start
+					break;
+				default:
+					ASSERT(o->p1);
+					break;
+				}
+			}
+			break;
+		case OCatch:
+			// Only used by OTrap typing
 			break;
 		default:
 			jit_error(hl_op_name(o->op));
@@ -4190,6 +4611,7 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 		}
 		ctx->jumps = NULL;
 	}
+	int codeEndPos = BUF_POS();
 	// add nops padding
 	jit_nops(ctx);
 	// clear regs
@@ -4199,12 +4621,19 @@ int hl_jit_function( jit_ctx *ctx, hl_module *m, hl_function *f ) {
 		r->lock = 0;
 	}
 	// save debug infos
-	{
+	if( ctx->debug ) {
 		int fid = (int)(f - m->code->functions);
 		ctx->debug[fid].start = codePos;
 		ctx->debug[fid].offsets = debug32 ? (void*)debug32 : (void*)debug16;
 		ctx->debug[fid].large = debug32 != NULL;
 	}
+	// unwind info
+#ifdef WIN64_UNWIND_TABLES
+	int uw_idx = ctx->nunwind++;
+	ctx->unwind_table[uw_idx].BeginAddress = codePos;
+	ctx->unwind_table[uw_idx].EndAddress = codeEndPos;
+	ctx->unwind_table[uw_idx].UnwindData = ctx->unwind_offset;
+#endif
 	// reset tmp allocator
 	hl_free(&ctx->falloc);
 	return codePos;
@@ -4258,12 +4687,21 @@ void *hl_jit_code( jit_ctx *ctx, hl_module *m, int *codesize, hl_debug_infos **d
 	if( !call_jit_c2hl ) {
 		call_jit_c2hl = code + ctx->c2hl;
 		call_jit_hl2c = code + ctx->hl2c;
-		hl_setup_callbacks2(callback_c2hl, get_wrapper, 1);
+		hl_setup.get_wrapper = get_wrapper;
+		hl_setup.static_call = callback_c2hl;
+		hl_setup.static_call_ref = true;
 #		ifdef JIT_CUSTOM_LONGJUMP
-		hl_setup_longjump(code + ctx->longjump);
+		hl_setup.throw_jump = (void(*)(jmp_buf, int))(code + ctx->longjump);
 #		endif
+	}
+#ifdef WIN64_UNWIND_TABLES
+	m->unwind_table = ctx->unwind_table;
+	RtlAddFunctionTable(m->unwind_table, ctx->nunwind, (DWORD64)code);
+#endif
+	if( !ctx->static_function_offset ) {
 		int i;
-		for(i=0;i<sizeof(ctx->static_functions)/sizeof(void*);i++)
+		ctx->static_function_offset = true;
+		for(i=0;i<(int)(sizeof(ctx->static_functions)/sizeof(void*));i++)
 			ctx->static_functions[i] = (void*)(code + (int)(int_val)ctx->static_functions[i]);
 	}
 	// patch calls

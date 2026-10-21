@@ -20,6 +20,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #include <hl.h>
+#include <hlsystem.h>
 #include "opcodes.h"
 
 typedef struct {
@@ -103,7 +104,7 @@ typedef struct {
 	bool large;
 } hl_debug_infos;
 
-typedef struct jit_ctx jit_ctx;
+typedef struct _jit_ctx jit_ctx;
 
 
 typedef struct {
@@ -114,6 +115,14 @@ typedef struct {
 	int *functions_hashes;
 	int *functions_indexes;
 } hl_code_hash;
+
+#if defined(HL_64) && defined(HL_WIN)
+//	always enable custom longjmp (Intel CET)
+#	define JIT_CUSTOM_LONGJUMP
+#	if !defined(HL_CONSOLE)
+#		define WIN64_UNWIND_TABLES
+#	endif
+#endif
 
 typedef struct {
 	hl_code *code;
@@ -128,6 +137,9 @@ typedef struct {
 	hl_debug_infos *jit_debug;
 	jit_ctx *jit_ctx;
 	hl_module_context ctx;
+#ifdef WIN64_UNWIND_TABLES
+	PRUNTIME_FUNCTION unwind_table;
+#endif
 } hl_module;
 
 hl_code *hl_code_read( const unsigned char *data, int size, char **error_msg );
@@ -148,6 +160,7 @@ int hl_module_init( hl_module *m, h_bool hot_reload );
 h_bool hl_module_patch( hl_module *m, hl_code *code );
 void hl_module_free( hl_module *m );
 h_bool hl_module_debug( hl_module *m, int port, h_bool wait );
+hl_type *hl_module_resolve_type( hl_module *m, hl_type *t, bool err );
 
 void hl_profile_setup( int sample_count );
 void hl_profile_end();

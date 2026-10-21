@@ -22,6 +22,76 @@ Unreleased (SDL3)
 * Fixed `FILE_HANDLE::isFile` reporting true for streams that are not backed by a `FILE*`.
 * Fixed `fopen` on macOS ignoring the requested mode.
 * WinRT (UWP) builds are no longer supported, SDL3 dropped that platform.
+* Merged openfl/lime `develop` (8.4.0) into the SDL3 branch.
+* Updated vendored curl to 8.23, mbedTLS to 3.6, pixman to 0.44.2 and HashLink to 1.16; SDL_sound 3.2.0 (SDL3) replaces the SDL2-based SDL_sound 2.0 submodule.
+* Ported the new window API to SDL3: `flash`, keyboard grab, mouse rect, always on top, transparent windows, VSync modes and display refresh rate.
+* Ported gamepad type, LED, sensors, trigger rumble, touchpads and the virtual test gamepad to SDL3, along with display connect, disconnect and move events.
+* Video playback (`VideoSource`) keeps its `rate` property on top of the upstream decoder fixes.
+* Audio keeps sample-accurate `currentTimePrecise` seeking, AL state polling for completion and OpenAL Soft device-change events; upstream output-device recovery is used when those events are unavailable.
+* Native desktop menus and tray icons (`native-desktop`) and the Vulkan renderer are opt-in (`-Dlime-native-desktop`, `-Dlime-vulkan`); they are not ported to SDL3 yet.
+* The Windows modal-loop callbacks from upstream are accepted but unused, `LIME_FIX_FREEZE_WINDOW` keeps frames coming instead.
+
+8.4.0 (06/18/2026)
+------------------
+
+- Added an experimental Vulkan renderer for native Windows, Linux, and Android targets.
+- Added `VulkanRenderContext` and Haxe Vulkan bindings for instance, device, swapchain, command, descriptor, memory, and pipeline helpers.
+- Added Vulkan bootstrap logging, error details, MSAA resolve support, mapped memory helpers, and descriptor helpers.
+- Added configurable application frame timing with `FrameProfile`, `FrameOptions`, `VSyncMode`, busy-wait, time precision, and uncap controls.
+- Added `AudioInput` and audio input device APIs with native OpenAL, HTML5, and Flash backends.
+- Added SDL_sound decoding and streaming, including inline stream playback, streams with unknown length, and loop counts.
+- Added `Window.alwaysOnTop` and transparent window support.
+- Added input event timestamps without changing listener signatures.
+- Added `Promise.completeAsync()`.
+- Added explicit font rendering flags, DPI-aware glyph rendering, unhinted font decomposition, and HarfBuzz FT font change notifications.
+- Added `Font.isBold` and `Font.isItalic`.
+- Added project.xml support for Android manifest tags and Gradle plugin entries.
+- Added AIR options for Android App Bundles, Android Studio output, and shared runtime deployment.
+- Added VAO support on macOS.
+- Added `VideoSource` and `VideoDecoder` for native video playback, with Media Foundation, AVFoundation, MediaCodec, and GStreamer backends.
+- Added `Window.flash()`, `Window.mouseRect`, and `Window.keyboardGrab`.
+- Added `Window.preciseMouseWheel` for smooth scrolling on touchpads and smooth wheels.
+- Added `Display.onConnect`, `Display.onDisconnect`, and `Display.onMove`.
+- Added `Gamepad.type`, motion sensors, touchpad events, trigger rumble, and light color.
+- Added `Locale.preferredLocales`.
+- Added `ThreadPool.idleTimeout`, so idle threads wait for more work before they exit.
+- Added `CURL.versionInfo()` values for the library's age, version number, and features.
+- Added `HTTPRequest.verifyCertificates`.
+- Changed asset copying and embedding to behave consistently across targets.
+- Changed OpenAL Soft HRTF to be disabled by default.
+- Changed `allowHighDPI` on Windows to draw at each display's own resolution, rather than stretched from 96 DPI.
+- Changed `Window.alert()` to also request attention on macOS and Linux.
+- Changed Windows to show input methods' own composition and candidate windows.
+- Changed `FrameProfile.Uncapped` to uncap the frame loop.
+- Changed native HTTP requests to look up names on a thread of their own on every platform.
+- Changed native HTTPS requests to check the server's certificate, against the system's trusted certificates (Mozilla's on iOS and tvOS). Set `HTTPRequest.verifyCertificates` to `false`, or define `lime-insecure-https`, for servers with self-signed certificates.
+- Changed static builds to use Lime's own mbedTLS rather than the one bundled with hxcpp.
+- Updated pixman and platform config for LLVM assembly fixes, ARM NEON, Android NDKs, and Apple platforms.
+- Updated MojoAL and gamepad mappings.
+- Updated SDL submodule to version 2.32.10.
+- Updated mbedTLS to 3.6.7 and curl to 8.23.0, adding TLS 1.3 to native HTTP requests.
+- Updated HashLink to 1.16.
+- Fixed an asset embedding regression.
+- Fixed SDL_sound in static builds, which couldn't find its native functions.
+- Fixed Windows cpp icon resource handling when no icon is generated.
+- Fixed GL cleanup and desktop GL object collection.
+- Fixed native and HashLink `AudioBuffer` layout mismatches.
+- Fixed `AudioBuffer.fromBytes()` and `AudioBuffer.fromBase64()` on HTML5 to avoid forcing HTML5 audio buffers.
+- Fixed OpenAL output device recovery.
+- Fixed perspective camera matrix calculation.
+- Fixed Tizen `appinfo.json` templating.
+- Fixed Android architecture parsing for `x86_64` and `x86_32`.
+- Fixed SDL_sound ARM64 Linux detection outside Raspberry Pi OS.
+- Fixed HTML5 transparent docs generation.
+- Fixed native HTTP requests freezing the application during slow name lookups (#1769).
+- Fixed HashLink collections waiting on threads blocked in native calls.
+- Fixed `Future.ready()` and `Future.result()` never seeing threaded work complete.
+- Fixed `Promise.completeAsync()` on C++.
+- Fixed single-threaded `ThreadPool` work running past its share of a frame while waiting.
+- Fixed `Font.renderGlyphs()` reading glyphs in an outdated layout, and on HashLink.
+- Fixed `getVertexAttribOffset()` and `getBufferPointerv()` writing through a null pointer.
+- Fixed video pan reaching sound that was already queued.
+- Fixed compositions longer than 31 bytes being cut short in input methods.
 
 8.3.2 (05/13/2026)
 ------------------

@@ -24,3 +24,5 @@ dependencies/androidtools/.gradle
 dependencies/extension-api/.gradle
 templates/extension/dependencies/android/.gradle
 tests/**/bin/
+templates/mbedtls/include/
+templates/mbedtls/config/

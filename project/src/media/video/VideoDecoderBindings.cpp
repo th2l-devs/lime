@@ -11,7 +11,9 @@ namespace lime {
 
 	static int id_audioChannels;
 	static int id_audioSampleRate;
+	static int id_audioUnsupported;
 	static int id_colorMatrix;
+	static int id_droppedFrames;
 	static int id_duration;
 	static int id_frameRate;
 	static int id_fullRange;
@@ -19,8 +21,11 @@ namespace lime {
 	static int id_hasVideo;
 	static int id_height;
 	static int id_length;
+	static int id_pixelAspectRatio;
+	static int id_rotation;
 	static int id_texture;
 	static int id_time;
+	static int id_videoUnsupported;
 	static int id_width;
 	static bool init = false;
 	static bool hl_init = false;
@@ -32,7 +37,9 @@ namespace lime {
 
 			id_audioChannels = val_id ("audioChannels");
 			id_audioSampleRate = val_id ("audioSampleRate");
+			id_audioUnsupported = val_id ("audioUnsupported");
 			id_colorMatrix = val_id ("colorMatrix");
+			id_droppedFrames = val_id ("droppedFrames");
 			id_duration = val_id ("duration");
 			id_frameRate = val_id ("frameRate");
 			id_fullRange = val_id ("fullRange");
@@ -40,8 +47,11 @@ namespace lime {
 			id_hasVideo = val_id ("hasVideo");
 			id_height = val_id ("height");
 			id_length = val_id ("length");
+			id_pixelAspectRatio = val_id ("pixelAspectRatio");
+			id_rotation = val_id ("rotation");
 			id_texture = val_id ("texture");
 			id_time = val_id ("time");
+			id_videoUnsupported = val_id ("videoUnsupported");
 			id_width = val_id ("width");
 			init = true;
 
@@ -56,7 +66,9 @@ namespace lime {
 
 			id_audioChannels = hl_hash_utf8 ("audioChannels");
 			id_audioSampleRate = hl_hash_utf8 ("audioSampleRate");
+			id_audioUnsupported = hl_hash_utf8 ("audioUnsupported");
 			id_colorMatrix = hl_hash_utf8 ("colorMatrix");
+			id_droppedFrames = hl_hash_utf8 ("droppedFrames");
 			id_duration = hl_hash_utf8 ("duration");
 			id_frameRate = hl_hash_utf8 ("frameRate");
 			id_fullRange = hl_hash_utf8 ("fullRange");
@@ -64,8 +76,11 @@ namespace lime {
 			id_hasVideo = hl_hash_utf8 ("hasVideo");
 			id_height = hl_hash_utf8 ("height");
 			id_length = hl_hash_utf8 ("length");
+			id_pixelAspectRatio = hl_hash_utf8 ("pixelAspectRatio");
+			id_rotation = hl_hash_utf8 ("rotation");
 			id_texture = hl_hash_utf8 ("texture");
 			id_time = hl_hash_utf8 ("time");
+			id_videoUnsupported = hl_hash_utf8 ("videoUnsupported");
 			id_width = hl_hash_utf8 ("width");
 			hl_init = true;
 
@@ -114,7 +129,12 @@ namespace lime {
 
 	value lime_video_decoder_create () {
 
+		// Loading the platform's media framework the first time can take a while,
+		// such as GStreamer scanning its plugins
+		System::GCEnterBlocking ();
 		VideoBackend* backend = VideoBackend::Create ();
+		System::GCExitBlocking ();
+
 		if (!backend) return alloc_null ();
 
 		VideoDecoder* decoder = new VideoDecoder (backend);
@@ -125,7 +145,10 @@ namespace lime {
 
 	HL_PRIM HL_CFFIPointer* HL_NAME(hl_video_decoder_create) () {
 
+		hl_blocking (true);
 		VideoBackend* backend = VideoBackend::Create ();
+		hl_blocking (false);
+
 		if (!backend) return NULL;
 
 		VideoDecoder* decoder = new VideoDecoder (backend);
@@ -158,6 +181,7 @@ namespace lime {
 
 		value info = alloc_empty_object ();
 		alloc_field (info, id_colorMatrix, alloc_int (decoder->frameColorMatrix));
+		alloc_field (info, id_droppedFrames, alloc_int (decoder->droppedFrames));
 		alloc_field (info, id_duration, alloc_float (decoder->frameDuration));
 		alloc_field (info, id_fullRange, alloc_bool (decoder->frameFullRange));
 		alloc_field (info, id_height, alloc_int (decoder->frameHeight));
@@ -178,6 +202,7 @@ namespace lime {
 
 		vdynamic* info = (vdynamic*)hl_alloc_dynobj ();
 		hl_dyn_seti (info, id_colorMatrix, &hlt_i32, decoder->frameColorMatrix);
+		hl_dyn_seti (info, id_droppedFrames, &hlt_i32, decoder->droppedFrames);
 		hl_dyn_setd (info, id_duration, decoder->frameDuration);
 		hl_dyn_seti (info, id_fullRange, &hlt_bool, decoder->frameFullRange);
 		hl_dyn_seti (info, id_height, &hlt_i32, decoder->frameHeight);
@@ -192,22 +217,32 @@ namespace lime {
 
 	bool lime_video_decoder_is_supported () {
 
-		return VideoBackend::IsSupported ();
+		System::GCEnterBlocking ();
+		bool supported = VideoBackend::IsSupported ();
+		System::GCExitBlocking ();
+
+		return supported;
 
 	}
 
 
 	HL_PRIM bool HL_NAME(hl_video_decoder_is_supported) () {
 
-		return VideoBackend::IsSupported ();
+		hl_blocking (true);
+		bool supported = VideoBackend::IsSupported ();
+		hl_blocking (false);
+
+		return supported;
 
 	}
 
 
 	value lime_video_decoder_open (value handle, HxString path, bool hardwareDecoding, int format) {
 
+		// hxcpp keeps strings with non-ASCII characters as UTF-16
 		VideoDecoder* decoder = (VideoDecoder*)val_data (handle);
-		std::string source = path.c_str () ? path.c_str () : "";
+		const char* utf8 = hxs_utf8 (path, nullptr);
+		std::string source = utf8 ? utf8 : "";
 
 		System::GCEnterBlocking ();
 		bool success = decoder->Open (source.c_str (), hardwareDecoding, (VideoFrameFormat)format);
@@ -220,11 +255,15 @@ namespace lime {
 		value info = alloc_empty_object ();
 		alloc_field (info, id_audioChannels, alloc_int (decoder->info.audioChannels));
 		alloc_field (info, id_audioSampleRate, alloc_int (decoder->info.audioSampleRate));
+		alloc_field (info, id_audioUnsupported, alloc_bool (decoder->info.audioUnsupported));
 		alloc_field (info, id_duration, alloc_float (decoder->info.duration));
 		alloc_field (info, id_frameRate, alloc_float (decoder->info.frameRate));
 		alloc_field (info, id_hasAudio, alloc_bool (decoder->info.hasAudio));
 		alloc_field (info, id_hasVideo, alloc_bool (decoder->info.hasVideo));
 		alloc_field (info, id_height, alloc_int (decoder->info.height));
+		alloc_field (info, id_pixelAspectRatio, alloc_float (decoder->info.pixelAspectRatio));
+		alloc_field (info, id_rotation, alloc_int (decoder->info.rotation));
+		alloc_field (info, id_videoUnsupported, alloc_bool (decoder->info.videoUnsupported));
 		alloc_field (info, id_width, alloc_int (decoder->info.width));
 		return info;
 
@@ -247,11 +286,15 @@ namespace lime {
 		vdynamic* info = (vdynamic*)hl_alloc_dynobj ();
 		hl_dyn_seti (info, id_audioChannels, &hlt_i32, decoder->info.audioChannels);
 		hl_dyn_seti (info, id_audioSampleRate, &hlt_i32, decoder->info.audioSampleRate);
+		hl_dyn_seti (info, id_audioUnsupported, &hlt_bool, decoder->info.audioUnsupported);
 		hl_dyn_setd (info, id_duration, decoder->info.duration);
 		hl_dyn_setd (info, id_frameRate, decoder->info.frameRate);
 		hl_dyn_seti (info, id_hasAudio, &hlt_bool, decoder->info.hasAudio);
 		hl_dyn_seti (info, id_hasVideo, &hlt_bool, decoder->info.hasVideo);
 		hl_dyn_seti (info, id_height, &hlt_i32, decoder->info.height);
+		hl_dyn_setd (info, id_pixelAspectRatio, decoder->info.pixelAspectRatio);
+		hl_dyn_seti (info, id_rotation, &hlt_i32, decoder->info.rotation);
+		hl_dyn_seti (info, id_videoUnsupported, &hlt_bool, decoder->info.videoUnsupported);
 		hl_dyn_seti (info, id_width, &hlt_i32, decoder->info.width);
 		return info;
 
@@ -263,7 +306,7 @@ namespace lime {
 		VideoDecoder* decoder = (VideoDecoder*)val_data (handle);
 		Bytes bytes (buffer);
 
-		if (!bytes.b || position < 0 || length < 0 || position + length > bytes.length) return VIDEO_READ_ERROR;
+		if (!bytes.b || position < 0 || length < 0 || position > bytes.length || length > bytes.length - position) return VIDEO_READ_ERROR;
 
 		return decoder->ReadAudio (bytes.b + position, length);
 
@@ -274,7 +317,7 @@ namespace lime {
 
 		VideoDecoder* decoder = (VideoDecoder*)handle->ptr;
 
-		if (!buffer || !buffer->b || position < 0 || length < 0 || position + length > buffer->length) return VIDEO_READ_ERROR;
+		if (!buffer || !buffer->b || position < 0 || length < 0 || position > buffer->length || length > buffer->length - position) return VIDEO_READ_ERROR;
 
 		return decoder->ReadAudio (buffer->b + position, length);
 
@@ -286,7 +329,7 @@ namespace lime {
 		VideoDecoder* decoder = (VideoDecoder*)val_data (handle);
 		Bytes bytes (buffer);
 
-		if (!bytes.b || position < 0 || length < 0 || position + length > bytes.length) {
+		if (!bytes.b || position < 0 || length < 0 || position > bytes.length || length > bytes.length - position) {
 
 			return decoder->ReadFrame (NULL, 0, time);
 
@@ -301,7 +344,7 @@ namespace lime {
 
 		VideoDecoder* decoder = (VideoDecoder*)handle->ptr;
 
-		if (!buffer || !buffer->b || position < 0 || length < 0 || position + length > buffer->length) {
+		if (!buffer || !buffer->b || position < 0 || length < 0 || position > buffer->length || length > buffer->length - position) {
 
 			return decoder->ReadFrame (NULL, 0, time);
 
@@ -312,24 +355,44 @@ namespace lime {
 	}
 
 
-	void lime_video_decoder_seek (value handle, double time, bool accurate) {
+	bool lime_video_decoder_seek (value handle, double time, bool accurate) {
 
 		VideoDecoder* decoder = (VideoDecoder*)val_data (handle);
 
 		System::GCEnterBlocking ();
-		decoder->Seek (time, accurate);
+		bool success = decoder->Seek (time, accurate);
 		System::GCExitBlocking ();
+
+		return success;
 
 	}
 
 
-	HL_PRIM void HL_NAME(hl_video_decoder_seek) (HL_CFFIPointer* handle, double time, bool accurate) {
+	void lime_video_decoder_set_drop_late_frames (value handle, bool value) {
+
+		VideoDecoder* decoder = (VideoDecoder*)val_data (handle);
+		decoder->dropLateFrames = value;
+
+	}
+
+
+	HL_PRIM void HL_NAME(hl_video_decoder_set_drop_late_frames) (HL_CFFIPointer* handle, bool value) {
+
+		VideoDecoder* decoder = (VideoDecoder*)handle->ptr;
+		decoder->dropLateFrames = value;
+
+	}
+
+
+	HL_PRIM bool HL_NAME(hl_video_decoder_seek) (HL_CFFIPointer* handle, double time, bool accurate) {
 
 		VideoDecoder* decoder = (VideoDecoder*)handle->ptr;
 
 		hl_blocking (true);
-		decoder->Seek (time, accurate);
+		bool success = decoder->Seek (time, accurate);
 		hl_blocking (false);
+
+		return success;
 
 	}
 
@@ -342,7 +405,8 @@ namespace lime {
 	DEFINE_PRIME4 (lime_video_decoder_open);
 	DEFINE_PRIME4 (lime_video_decoder_read_audio);
 	DEFINE_PRIME5 (lime_video_decoder_read_frame);
-	DEFINE_PRIME3v (lime_video_decoder_seek);
+	DEFINE_PRIME3 (lime_video_decoder_seek);
+	DEFINE_PRIME2v (lime_video_decoder_set_drop_late_frames);
 
 
 	#define _TBYTES _OBJ (_I32 _BYTES)
@@ -356,7 +420,8 @@ namespace lime {
 	DEFINE_HL_PRIM (_DYN, hl_video_decoder_open, _TCFFIPOINTER _STRING _BOOL _I32);
 	DEFINE_HL_PRIM (_I32, hl_video_decoder_read_audio, _TCFFIPOINTER _TBYTES _I32 _I32);
 	DEFINE_HL_PRIM (_I32, hl_video_decoder_read_frame, _TCFFIPOINTER _TBYTES _I32 _I32 _F64);
-	DEFINE_HL_PRIM (_VOID, hl_video_decoder_seek, _TCFFIPOINTER _F64 _BOOL);
+	DEFINE_HL_PRIM (_BOOL, hl_video_decoder_seek, _TCFFIPOINTER _F64 _BOOL);
+	DEFINE_HL_PRIM (_VOID, hl_video_decoder_set_drop_late_frames, _TCFFIPOINTER _BOOL);
 
 
 }

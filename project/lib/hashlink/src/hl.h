@@ -27,11 +27,11 @@
 	https://github.com/HaxeFoundation/hashlink/wiki/
 **/
 
-#define HL_VERSION	0x010C00
+#define HL_VERSION	0x011000
 
 #if defined(_WIN32)
 #	define HL_WIN
-#	ifndef _DURANGO
+#	if !defined(_DURANGO) && !defined(_GAMING_XBOX)
 #		define HL_WIN_DESKTOP
 #	endif
 #endif
@@ -53,9 +53,16 @@
 
 #if defined(linux) || defined(__linux__)
 #	define HL_LINUX
-#ifndef _GNU_SOURCE
-#	define _GNU_SOURCE
+#	ifndef _GNU_SOURCE
+#		define _GNU_SOURCE
+#	endif
 #endif
+
+#if defined(__EMSCRIPTEN__)
+#	define HL_EMSCRIPTEN
+#	ifndef _GNU_SOURCE
+#		define _GNU_SOURCE
+#	endif
 #endif
 
 #if defined(HL_IOS) || defined(HL_ANDROID) || defined(HL_TVOS)
@@ -74,7 +81,11 @@
 #	define HL_XBO
 #endif
 
-#if defined(HL_PS) || defined(HL_NX) || defined(HL_XBO)
+#ifdef _GAMING_XBOX
+#	define HL_XBS
+#endif
+
+#if defined(HL_PS) || defined(HL_NX) || defined(HL_XBO) || defined(HL_XBS) || defined(HL_OS)
 #	define HL_CONSOLE
 #endif
 
@@ -82,7 +93,7 @@
 #	define HL_BSD
 #endif
 
-#if defined(_64BITS) || defined(__x86_64__) || defined(_M_X64) || defined(__LP64__)
+#if defined(_64BITS) || defined(__x86_64__) || defined(_M_X64) || defined(__LP64__) || defined(__wasm64__)
 #	define HL_64
 #endif
 
@@ -106,7 +117,7 @@
 #	define HL_CLANG
 #endif
 
-#if defined(_MSC_VER) && !defined(HL_LLVM)
+#if defined(_MSC_VER)
 #	define HL_VCC
 #	pragma warning(disable:4996) // remove deprecated C API usage warnings
 #	pragma warning(disable:4055) // void* - to - function cast
@@ -119,6 +130,10 @@
 #	pragma warning(disable:4820) // windows include
 #	pragma warning(disable:4668) // windows include
 #	pragma warning(disable:4738) // return float bad performances
+#	pragma warning(disable:4061) // explicit values in switch
+#	if (_MSC_VER >= 1920)
+#		pragma warning(disable:5045) // spectre
+#	endif
 #endif
 
 #if defined(HL_VCC) || defined(HL_MINGW) || defined(HL_CYGWIN)
@@ -147,27 +162,38 @@
 #	define HL_THREAD_STATIC_VAR static
 #endif
 
-#include <stddef.h>
-#ifndef HL_VCC
-#	include <stdint.h>
+#if defined(HL_VCC) && defined(__SANITIZE_ADDRESS__)
+#	include <sanitizer/asan_interface.h>
+#	define ASAN_JIT_STACK(ptr,size)	__asan_unpoison_memory_region(ptr,size)
+#	define ASAN_DISABLE				__declspec(no_sanitize_address)
+#else
+#	define ASAN_JIT_STACK(ptr,size)
+#	define ASAN_DISABLE
 #endif
 
-#if defined(HL_VCC) || defined(HL_MINGW)
-#	define EXPORT __declspec( dllexport )
-#	define IMPORT __declspec( dllimport )
-#else
-#if defined(HL_GCC) || defined(HL_CLANG)
-#	define EXPORT __attribute__((visibility("default")))
-#else
-#	define EXPORT
+#include <stddef.h>
+#include <stdint.h>
+
+#ifndef HL_EXPORT
+#	ifdef HL_WIN
+#		define HL_EXPORT __declspec( dllexport )
+#	elif defined(HL_GCC) || defined(HL_CLANG)
+#		define HL_EXPORT __attribute__((visibility("default")))
+#	else
+#		define HL_EXPORT
+#	endif
 #endif
-#	define IMPORT extern
+
+#ifdef HL_WIN
+#	define HL_IMPORT __declspec( dllimport )
+#else
+#	define HL_IMPORT extern
 #endif
 
 #ifdef HL_64
 #	define HL_WSIZE 8
 #	define IS_64	1
-#	ifdef HL_VCC
+#	if defined(HL_VCC) || defined(HL_MINGW)
 #		define _PTR_FMT	L"%IX"
 #	else
 #		define _PTR_FMT	u"%lX"
@@ -175,7 +201,7 @@
 #else
 #	define HL_WSIZE 4
 #	define IS_64	0
-#	ifdef HL_VCC
+#	if defined(HL_VCC) || defined(HL_MINGW)
 #		define _PTR_FMT	L"%IX"
 #	else
 #		define _PTR_FMT	u"%X"
@@ -183,9 +209,15 @@
 #endif
 
 #ifdef __cplusplus
-#	define C_FUNCTION_BEGIN extern "C" {
+#	ifndef HL_EXTERN_C
+#		define HL_EXTERN_C	extern "C"
+# 	endif
+#	define C_FUNCTION_BEGIN HL_EXTERN_C {
 #	define C_FUNCTION_END	};
 #else
+#	ifndef HL_EXTERN_C
+#		define HL_EXTERN_C
+# 	endif
 #	define C_FUNCTION_BEGIN
 #	define C_FUNCTION_END
 #endif
@@ -200,46 +232,31 @@ typedef unsigned long long uint64;
 #include <memory.h>
 
 #if defined(LIBHL_EXPORTS)
-#define HL_API extern EXPORT
+#define HL_API extern HL_EXPORT
 #elif defined(LIBHL_STATIC)
 #define HL_API extern
 #else
-#define	HL_API IMPORT
+#define	HL_API HL_IMPORT
+#endif
+
+#if defined(HL_VCC)
+#define HL_INLINE __inline
+#else
+#define HL_INLINE inline
 #endif
 
 // -------------- UNICODE -----------------------------------
 
-#if defined(HL_WIN) && !defined(HL_LLVM)
-#if defined(HL_WIN_DESKTOP) && !defined(HL_MINGW)
-#	include <Windows.h>
-#elif defined(HL_WIN_DESKTOP) && defined(HL_MINGW)
-#	include<windows.h>
-#else
-#	include <xdk.h>
-#endif
+#if defined(HL_WIN)
 #	include <wchar.h>
 typedef wchar_t	uchar;
 #	define USTR(str)	L##str
-#	define HL_NATIVE_UCHAR_FUN
-#	define usprintf		swprintf
-#	define uprintf		wprintf
-#	define ustrlen		wcslen
-#	define ustrdup		_wcsdup
-HL_API int uvszprintf( uchar *out, int out_size, const uchar *fmt, va_list arglist );
-#	define utod(s,end)	wcstod(s,end)
-#	define utoi(s,end)	wcstol(s,end,10)
-#	define ucmp(a,b)	wcscmp(a,b)
-#	define utostr(out,size,str) wcstombs(out,str,size)
-#elif defined(HL_MAC)
-typedef uint16_t uchar;
-#	undef USTR
-#	define USTR(str)	u##str
 #else
 #	include <stdarg.h>
 #if defined(HL_IOS) || defined(HL_TVOS) || defined(HL_MAC)
 #include <stddef.h>
 #include <stdint.h>
-#if !defined(__cplusplus) || __cplusplus < 201103L
+#if !defined(__cplusplus) || (__cplusplus < 201103L && !defined(_LIBCPP_VERSION))
 typedef uint16_t char16_t;
 typedef uint32_t char32_t;
 #endif
@@ -252,7 +269,6 @@ typedef char16_t uchar;
 #endif
 
 C_FUNCTION_BEGIN
-#ifndef HL_NATIVE_UCHAR_FUN
 HL_API double utod( const uchar *str, uchar **end );
 HL_API int utoi( const uchar *str, uchar **end );
 HL_API int ustrlen( const uchar *str );
@@ -262,38 +278,50 @@ HL_API int utostr( char *out, int out_size, const uchar *str );
 HL_API int usprintf( uchar *out, int out_size, const uchar *fmt, ... );
 HL_API int uvszprintf( uchar *out, int out_size, const uchar *fmt, va_list arglist );
 HL_API void uprintf( const uchar *fmt, const uchar *str );
-#endif
 C_FUNCTION_END
 
 #if defined(HL_VCC)
-#	define hl_debug_break()	if( IsDebuggerPresent() ) __debugbreak()
+#	define hl_debug_break()	if( hl_detect_debugger() ) __debugbreak()
 #elif defined(HL_PS) && defined(_DEBUG)
 #	define hl_debug_break()	__debugbreak()
 #elif defined(HL_NX)
 C_FUNCTION_BEGIN
 HL_API void hl_debug_break( void );
 C_FUNCTION_END
-#elif defined(HL_LINUX) && defined(__i386__)
-#	ifdef HL_64
-#	define hl_debug_break() \
-		if( hl_detect_debugger() ) \
-			__asm__("0: int3;" \
-			    ".pushsection embed-breakpoints;" \
-			    ".quad 0b;" \
-			    ".popsection")
-#	else
-#	define hl_debug_break() \
-		if( hl_detect_debugger() ) \
-			__asm__("0: int3;" \
-			    ".pushsection embed-breakpoints;" \
-			    ".long 0b;" \
-			    ".popsection")
+#elif !defined(HL_CONSOLE)
+
+// use __builtin_debugtrap when available
+// fall back to breakpoint instructions for certain architectures
+// else raise SIGTRAP
+#	ifdef __has_builtin
+#	if __has_builtin(__builtin_debugtrap)
+#	define USE_BUILTIN_DEBUG_TRAP 1
 #	endif
-#elif defined(HL_MAC)
-#include <signal.h>
+#	endif
+
+#	ifdef USE_BUILTIN_DEBUG_TRAP
 #	define hl_debug_break() \
 		if( hl_detect_debugger() ) \
-			raise(SIGTRAP);//__builtin_trap();
+			__builtin_debugtrap()
+#	elif defined(__x86_64__) || defined(__i386__)
+#	define hl_debug_break() \
+		if( hl_detect_debugger() ) \
+			__asm__("int3;")
+#	elif defined(__aarch64__)
+#	define hl_debug_break() \
+		if( hl_detect_debugger() ) \
+			__asm__("brk #0xf000;")
+#	elif defined(__riscv)
+#	define hl_debug_break() \
+		if( hl_detect_debugger() ) \
+			__asm__("ebreak;")
+#	else
+#	include <signal.h>
+#	define hl_debug_break() \
+		if( hl_detect_debugger() ) \
+			raise(SIGTRAP)
+#	endif
+#undef USE_BUILTIN_DEBUG_TRAP
 #else
 #	define hl_debug_break()
 #endif
@@ -331,8 +359,10 @@ typedef enum {
 	HNULL	= 19,
 	HMETHOD = 20,
 	HSTRUCT	= 21,
+	HPACKED = 22,
+	HGUID	= 23,
 	// ---------
-	HLAST	= 22,
+	HLAST	= 24,
 	_H_FORCE_INT = 0x7FFFFFFF
 } hl_type_kind;
 
@@ -521,6 +551,8 @@ struct hl_runtime_obj {
 	int size;
 	int nmethods;
 	int nbindings;
+	unsigned char pad_size;
+	unsigned char largest_field;
 	bool hasPtr;
 	void **methods;
 	int *fields_indexes;
@@ -548,6 +580,9 @@ typedef struct {
 	vvirtual *virtuals;
 } vdynobj;
 
+#define HL_DYNOBJ_INDEX_SHIFT 17
+#define HL_DYNOBJ_INDEX_MASK ((1 << HL_DYNOBJ_INDEX_SHIFT) - 1)
+
 typedef struct _venum {
 	hl_type *t;
 	int index;
@@ -565,9 +600,48 @@ HL_API hl_type hlt_dynobj;
 HL_API hl_type hlt_bool;
 HL_API hl_type hlt_abstract;
 
+
+
+#if defined(HL_WIN)
+typedef uchar pchar;
+#define pstrchr wcschr
+#define pstrlen	ustrlen
+#else
+typedef char pchar;
+#define pstrchr strchr
+#define pstrlen	strlen
+#define HL_UTF8PATH
+#endif
+
+#include <setjmp.h>
+
+typedef struct {
+	pchar* file_path;
+	pchar** sys_args;
+	int sys_nargs;
+	void (*throw_jump)(jmp_buf, int);
+	uchar* (*resolve_symbol)(void* addr, uchar* out, int* outSize);
+	int (*capture_stack)(void** stack, int size);
+	bool (*reload_check)(vbyte* alt_file);
+	void* (*static_call)(void* fun, hl_type* t, void** args, vdynamic* out);
+	void* (*get_wrapper)(hl_type* t);
+	void (*profile_event)(int code, vbyte *data, int len);
+	void (*before_exit)();
+	void (*vtune_init)();
+	bool (*load_plugin)( pchar *file );
+	vdynamic* (*resolve_type)( hl_type *t, hl_type *gt );
+	bool static_call_ref;
+	int closure_stack_capture;
+	bool is_debugger_enabled;
+	bool is_debugger_attached;
+} hl_setup_t;
+
+HL_API hl_setup_t hl_setup;
+HL_API void hl_sys_init();
+
 HL_API double hl_nan( void );
 HL_API bool hl_is_dynamic( hl_type *t );
-#define hl_is_ptr(t)	((t)->kind >= HBYTES)
+HL_API bool hl_is_ptr( hl_type *t );
 HL_API bool hl_same_type( hl_type *a, hl_type *b );
 HL_API bool hl_safe_cast( hl_type *t, hl_type *to );
 
@@ -586,6 +660,7 @@ HL_API int hl_utf8_length( const vbyte *s, int pos );
 HL_API int hl_from_utf8( uchar *out, int outLen, const char *str );
 HL_API char *hl_to_utf8( const uchar *bytes );
 HL_API uchar *hl_to_utf16( const char *str );
+HL_API uchar *hl_guid_str( int64 guid, uchar buf[14] );
 HL_API vdynamic *hl_virtual_make_value( vvirtual *v );
 HL_API hl_obj_field *hl_obj_field_fetch( hl_type *t, int fid );
 
@@ -601,9 +676,8 @@ HL_API void hl_assert( void );
 HL_API HL_NO_RETURN( void hl_throw( vdynamic *v ) );
 HL_API HL_NO_RETURN( void hl_rethrow( vdynamic *v ) );
 HL_API HL_NO_RETURN( void hl_null_access( void ) );
-HL_API void hl_setup_longjump( void *j );
-HL_API void hl_setup_exception( void *resolve_symbol, void *capture_stack );
 HL_API void hl_dump_stack( void );
+HL_API void hl_print_uncaught_exception( vdynamic *exc );
 HL_API varray *hl_exception_stack( void );
 HL_API bool hl_detect_debugger( void );
 
@@ -613,11 +687,13 @@ HL_API hl_field_lookup *hl_lookup_find( hl_field_lookup *l, int size, int hash )
 HL_API hl_field_lookup *hl_lookup_insert( hl_field_lookup *l, int size, int hash, hl_type *t, int index );
 
 HL_API int hl_dyn_geti( vdynamic *d, int hfield, hl_type *t );
+HL_API int64 hl_dyn_geti64( vdynamic *d, int hfield );
 HL_API void *hl_dyn_getp( vdynamic *d, int hfield, hl_type *t );
 HL_API float hl_dyn_getf( vdynamic *d, int hfield );
 HL_API double hl_dyn_getd( vdynamic *d, int hfield );
 
 HL_API int hl_dyn_casti( void *data, hl_type *t, hl_type *to );
+HL_API int64 hl_dyn_casti64( void *data, hl_type *t );
 HL_API void *hl_dyn_castp( void *data, hl_type *t, hl_type *to );
 HL_API float hl_dyn_castf( void *data, hl_type *t );
 HL_API double hl_dyn_castd( void *data, hl_type *t );
@@ -628,6 +704,7 @@ HL_API vdynamic *hl_make_dyn( void *data, hl_type *t );
 HL_API void hl_write_dyn( void *data, hl_type *t, vdynamic *v, bool is_tmp );
 
 HL_API void hl_dyn_seti( vdynamic *d, int hfield, hl_type *t, int value );
+HL_API void hl_dyn_seti64( vdynamic *d, int hfield, int64 value );
 HL_API void hl_dyn_setp( vdynamic *d, int hfield, hl_type *t, void *ptr );
 HL_API void hl_dyn_setf( vdynamic *d, int hfield, float f );
 HL_API void hl_dyn_setd( vdynamic *d, int hfield, double v );
@@ -661,15 +738,15 @@ HL_API vdynamic *hl_dyn_call_safe( vclosure *c, vdynamic **args, int nargs, bool
 	so you are sure it's of the used typed. Otherwise use hl_dyn_call
 */
 #define hl_call0(ret,cl) \
-	(cl->hasValue ? ((ret(*)(vdynamic*))cl->fun)(cl->value) : ((ret(*)())cl->fun)())
+	(cl->hasValue ? ((ret(*)(vdynamic*))cl->fun)((vdynamic*)cl->value) : ((ret(*)())cl->fun)())
 #define hl_call1(ret,cl,t,v) \
-	(cl->hasValue ? ((ret(*)(vdynamic*,t))cl->fun)(cl->value,v) : ((ret(*)(t))cl->fun)(v))
+	(cl->hasValue ? ((ret(*)(vdynamic*,t))cl->fun)((vdynamic*)cl->value,v) : ((ret(*)(t))cl->fun)(v))
 #define hl_call2(ret,cl,t1,v1,t2,v2) \
-	(cl->hasValue ? ((ret(*)(vdynamic*,t1,t2))cl->fun)(cl->value,v1,v2) : ((ret(*)(t1,t2))cl->fun)(v1,v2))
+	(cl->hasValue ? ((ret(*)(vdynamic*,t1,t2))cl->fun)((vdynamic*)cl->value,v1,v2) : ((ret(*)(t1,t2))cl->fun)(v1,v2))
 #define hl_call3(ret,cl,t1,v1,t2,v2,t3,v3) \
-	(cl->hasValue ? ((ret(*)(vdynamic*,t1,t2,t3))cl->fun)(cl->value,v1,v2,v3) : ((ret(*)(t1,t2,t3))cl->fun)(v1,v2,v3))
+	(cl->hasValue ? ((ret(*)(vdynamic*,t1,t2,t3))cl->fun)((vdynamic*)cl->value,v1,v2,v3) : ((ret(*)(t1,t2,t3))cl->fun)(v1,v2,v3))
 #define hl_call4(ret,cl,t1,v1,t2,v2,t3,v3,t4,v4) \
-	(cl->hasValue ? ((ret(*)(vdynamic*,t1,t2,t3,t4))cl->fun)(cl->value,v1,v2,v3,v4) : ((ret(*)(t1,t2,t3,t4))cl->fun)(v1,v2,v3,v4))
+	(cl->hasValue ? ((ret(*)(vdynamic*,t1,t2,t3,t4))cl->fun)((vdynamic*)cl->value,v1,v2,v3,v4) : ((ret(*)(t1,t2,t3,t4))cl->fun)(v1,v2,v3,v4))
 
 // ----------------------- THREADS --------------------------------------------------
 
@@ -752,6 +829,7 @@ HL_API void hl_free( hl_alloc *a );
 
 HL_API void hl_global_init( void );
 HL_API void hl_global_free( void );
+HL_API void hl_global_lock( bool lock );
 
 HL_API void *hl_alloc_executable_memory( int size );
 HL_API void hl_free_executable_memory( void *ptr, int size );
@@ -774,8 +852,18 @@ HL_API void hl_throw_buffer( hl_buffer *b );
 
 // ----------------------- FFI ------------------------------------------------------
 
+#ifndef HL_DISABLE_LEGACY_FFI
+
+#if defined(HLFFI_H)
+#	if defined(_MSC_VER)
+#		pragma message("Warning: Please define HL_DISABLE_LEGACY_FFI if using hl.h with hl_ffi.h")
+#	else
+#		warning	Please define HL_DISABLE_LEGACY_FFI if using hl.h with hl_ffi.h
+#	endif
+#endif
+
 // match GNU C++ mangling
-#define TYPE_STR	"vcsilfdbBDPOATR??X?N?S"
+#define TYPE_STR	"vcsilfdbBDPOATR??X?N?S?g"
 
 #undef  _VOID
 #define _NO_ARG
@@ -798,45 +886,43 @@ HL_API void hl_throw_buffer( hl_buffer *b );
 #undef _NULL
 #define _NULL(t)					"N" t
 #define _STRUCT						"S"
+#define _GUID						"g"
 
 #undef _STRING
 #define _STRING						_OBJ(_BYTES _I32)
+
+#if defined(LIBHL_EXPORTS)
+#	define DEFINE_PRIM(t,name,args)						DEFINE_PRIM_WITH_NAME(t,hl_##name,args,name)
+#else
+#	define DEFINE_PRIM(t,name,args)						DEFINE_PRIM_WITH_NAME(t,name,args,name)
+#endif
+
+#if (defined(HL_NAME) && !defined(LIBHL_STATIC)) || defined(LIBHL_EXPORTS)
+#	ifndef HL_PRIM
+#		define	HL_PRIM				HL_EXTERN_C HL_EXPORT
+#	endif
+#   define DEFINE_PRIM_WITH_NAME(t,name,args,realName)	HL_EXTERN_C HL_EXPORT void *hlp_##realName( const char **sign ) { *sign = _FUN(t,args); return (void*)(&HL_NAME(name)); }
+#else
+#	ifndef HL_PRIM
+#		define	HL_PRIM				HL_EXTERN_C
+#	endif
+#	define DEFINE_PRIM_WITH_NAME(t,name,args,realName)
+#endif
+
+#ifndef HL_NAME
+#   define HL_NAME(p) p
+#endif
+
+#define EXPORT HL_EXPORT
+#define IMPORT HL_IMPORT
+
+#endif // HL_DISABLE_LEGACY_FFI
 
 typedef struct {
 	hl_type *t;
 	uchar *bytes;
 	int length;
 } vstring;
-
-#define DEFINE_PRIM(t,name,args)						DEFINE_PRIM_WITH_NAME(t,name,args,name)
-#define _DEFINE_PRIM_WITH_NAME(t,name,args,realName)	C_FUNCTION_BEGIN EXPORT void *hlp_##realName( const char **sign ) { *sign = _FUN(t,args); return (void*)(&HL_NAME(name)); } C_FUNCTION_END
-
-#if !defined(HL_NAME)
-#	define HL_NAME(p)					p
-#	ifdef LIBHL_EXPORTS
-#		define HL_PRIM				EXPORT
-#		undef DEFINE_PRIM
-#		define DEFINE_PRIM(t,name,args)						_DEFINE_PRIM_WITH_NAME(t,hl_##name,args,name)
-#		define DEFINE_PRIM_WITH_NAME						_DEFINE_PRIM_WITH_NAME
-#	else
-#		define HL_PRIM
-#		define DEFINE_PRIM_WITH_NAME(t,name,args,realName)
-#	endif
-#elif defined(LIBHL_STATIC)
-#	ifdef __cplusplus
-#		define	HL_PRIM				extern "C"
-#	else
-#		define	HL_PRIM
-#	endif
-#define DEFINE_PRIM_WITH_NAME(t,name,args,realName)
-#else
-#	ifdef __cplusplus
-#		define	HL_PRIM				extern "C" EXPORT
-#	else
-#		define	HL_PRIM				EXPORT
-#	endif
-#	define DEFINE_PRIM_WITH_NAME	_DEFINE_PRIM_WITH_NAME
-#endif
 
 #if defined(HL_GCC) && !defined(HL_CONSOLE)
 #	ifdef HL_CLANG
@@ -857,12 +943,7 @@ typedef struct {
 #define hl_fatal4(msg,p0,p1,p2,p3)	hl_fatal_fmt(__FILE__,__LINE__,msg,p0,p1,p2,p3)
 HL_API void *hl_fatal_error( const char *msg, const char *file, int line );
 HL_API void hl_fatal_fmt( const char *file, int line, const char *fmt, ...);
-HL_API void hl_sys_init(void **args, int nargs, void *hlfile);
-HL_API void hl_setup_callbacks(void *sc, void *gw);
-HL_API void hl_setup_callbacks2(void *sc, void *gw, int flags);
-HL_API void hl_setup_reload_check( void *freload, void *param );
 
-#include <setjmp.h>
 typedef struct _hl_trap_ctx hl_trap_ctx;
 struct _hl_trap_ctx {
 	jmp_buf buf;
@@ -878,6 +959,7 @@ struct _hl_trap_ctx {
 #define HL_EXC_IS_THROW		4
 #define HL_THREAD_INVISIBLE	16
 #define HL_THREAD_PROFILER_PAUSED 32
+#define HL_EXC_KILL			64
 #define HL_TREAD_TRACK_SHIFT 16
 
 #define HL_TRACK_ALLOC		1
@@ -887,6 +969,11 @@ struct _hl_trap_ctx {
 #define HL_TRACK_MASK		(HL_TRACK_ALLOC | HL_TRACK_CAST | HL_TRACK_DYNFIELD | HL_TRACK_DYNCALL)
 
 #define HL_MAX_EXTRA_STACK 64
+
+#ifdef HL_MAC
+#include <mach/mach.h>
+#include <signal.h>
+#endif
 
 typedef struct {
 	int thread_id;
@@ -902,13 +989,28 @@ typedef struct {
 	int flags;
 	int exc_stack_count;
 	// extra
+	char thread_name[128];
 	jmp_buf gc_regs;
 	void *exc_stack_trace[HL_EXC_MAX_STACK];
 	void *extra_stack_data[HL_MAX_EXTRA_STACK];
 	int extra_stack_size;
+	#ifdef HL_MAC
+	thread_t mach_thread_id;
+	pthread_t pthread_id;
+	#endif
 } hl_thread_info;
 
+typedef struct {
+	int count;
+	volatile bool stopping_world;
+	hl_thread_info **threads;
+	hl_mutex *global_lock;
+	hl_mutex *exclusive_lock;
+	void *guid_map;
+} hl_threads_info;
+
 HL_API hl_thread_info *hl_get_thread();
+HL_API hl_threads_info *hl_gc_threads_info();
 
 #ifdef HL_TRACK_ENABLE
 
@@ -933,5 +1035,10 @@ HL_API hl_track_info hl_track;
 #endif
 
 C_FUNCTION_END
+
+#ifndef HL_DISABLE_LEGACY_FFI
+#	undef C_FUNCTION_BEGIN
+#	undef C_FUNCTION_END
+#endif
 
 #endif

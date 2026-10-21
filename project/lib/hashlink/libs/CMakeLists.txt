@@ -1,19 +1,49 @@
 set(INCLUDES_BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 
+if (BUILD_SHARED_LIBS)
+    set(HDLL_SUFFIX .hdll)
+else()
+    set(HDLL_SUFFIX .hdll${CMAKE_STATIC_LIBRARY_SUFFIX})
+endif()
+
 function(set_as_hdll target)
     set_target_properties(${target}.hdll
         PROPERTIES
         PREFIX ""
         OUTPUT_NAME ${target}
-        SUFFIX .hdll
+        SUFFIX ${HDLL_SUFFIX}
     )
+    if (NOT MSVC AND NOT APPLE)
+        target_link_options(${target}.hdll PRIVATE "-Wl,--no-undefined")
+    endif()
 endfunction()
 
-if(WIN32)
-    option(WITH_DIRECTX "Build directx.hdll." ON)
-    if(WITH_DIRECTX)
-        add_subdirectory(directx)
+if (DOWNLOAD_DEPENDENCIES)
+    set(CMAKE_COMMON_DEP_ARGS
+        -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+        -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_MESSAGE_LOG_LEVEL=ERROR
+        -DCMAKE_INSTALL_MESSAGE=LAZY
+    )
+    if (ANDROID)
+        list(APPEND CMAKE_COMMON_DEP_ARGS
+            -DANDROID_PLATFORM=${ANDROID_PLATFORM}
+            -DANDROID_ABI=${CMAKE_ANDROID_ARCH_ABI}
+        )
     endif()
+    if (APPLE)
+        list(APPEND CMAKE_COMMON_DEP_ARGS
+            -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+        )
+    endif()
+    include(ExternalProject)
+    include(FetchContent)
+endif()
+
+if(WIN32)
+    add_subdirectory(directx)
 endif()
 
 option(WITH_FMT "Build fmt.hdll." ON)
@@ -23,11 +53,9 @@ endif()
 
 # add_subdirectory(mesa)
 
-if(WIN32)
-    option(WITH_OPENAL "Build openal.hdll." ON)
-    if(WITH_OPENAL)
-        add_subdirectory(openal)
-    endif()
+option(WITH_OPENAL "Build openal.hdll." ON)
+if(WITH_OPENAL)
+    add_subdirectory(openal)
 endif()
 
 option(WITH_SDL "Build sdl.hdll." ON)
@@ -40,11 +68,9 @@ if(WITH_SQLITE)
     add_subdirectory(sqlite)
 endif()
 
-if(WIN32)
-    option(WITH_SSL "Build ssl.hdll." ON)
-    if(WITH_SSL)
+option(WITH_SSL "Build ssl.hdll." ON)
+if(WITH_SSL)
     add_subdirectory(ssl)
-    endif()
 endif()
 
 option(WITH_UI "Build ui.hdll." ON)
@@ -62,4 +88,9 @@ if(WIN32)
     if(WITH_VIDEO)
         add_subdirectory(video)
     endif()
+endif()
+
+option(WITH_HEAPS "Build heaps.hdll." ON)
+if(WITH_HEAPS)
+    add_subdirectory(heaps)
 endif()

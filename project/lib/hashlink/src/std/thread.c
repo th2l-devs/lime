@@ -21,6 +21,7 @@
  */
 
 #include <hl.h>
+#include "hlsystem.h"
 
 typedef struct _hl_semaphore hl_semaphore;
 typedef struct _hl_condition hl_condition;
@@ -67,6 +68,7 @@ struct _hl_condition {
 struct _hl_tls {
 	void (*free)( hl_tls * );
 	DWORD tid;
+	bool gc;
 };
 
 #else
@@ -106,6 +108,7 @@ struct _hl_condition {
 struct _hl_tls {
 	void (*free)( hl_tls * );
 	pthread_key_t key;
+	bool gc;
 };
 
 #endif
@@ -217,12 +220,18 @@ HL_PRIM hl_semaphore *hl_semaphore_alloc(int value) {
 HL_PRIM void hl_semaphore_acquire(hl_semaphore *sem) {
 #	if !defined(HL_THREADS)
 #	elif defined(HL_WIN)
+	hl_blocking(true);
 	WaitForSingleObject(sem->sem, INFINITE);
+	hl_blocking(false);
 #	else
 #	ifdef __APPLE__
+	hl_blocking(true);
 	dispatch_semaphore_wait(sem->sem, DISPATCH_TIME_FOREVER);
+	hl_blocking(false);
 #	else
+	hl_blocking(true);
 	sem_wait(&sem->sem);
+	hl_blocking(false);
 #	endif
 #	endif
 }
@@ -231,16 +240,24 @@ HL_PRIM bool hl_semaphore_try_acquire(hl_semaphore *sem, vdynamic *timeout) {
 #	if !defined(HL_THREADS)
 	return true;
 #	elif defined(HL_WIN)
-	return WaitForSingleObject(sem->sem,
+	hl_blocking(true);
+	bool ret = WaitForSingleObject(sem->sem,
 	                           timeout ? (DWORD)((FLOAT)timeout->v.d * 1000.0)
 	                                   : 0) == WAIT_OBJECT_0;
+	hl_blocking(false);
+	return ret;
 #	else
 #	ifdef __APPLE__
-	return dispatch_semaphore_wait(
+	hl_blocking(true);
+	bool ret = dispatch_semaphore_wait(
 	           sem->sem, dispatch_time(DISPATCH_TIME_NOW,
 	                              (int64_t)((timeout ? timeout->v.d : 0) *
 	                                        1000 * 1000 * 1000))) == 0;
+	hl_blocking(false);
+	return ret;
 #	else
+	hl_blocking(true);
+	bool ret;
 	if (timeout) {
 		struct timeval tv;
 		struct timespec t;
@@ -254,11 +271,12 @@ HL_PRIM bool hl_semaphore_try_acquire(hl_semaphore *sem, vdynamic *timeout) {
 		delta -= idelta2 * 1e9;
 		t.tv_sec = tv.tv_sec + idelta + idelta2;
 		t.tv_nsec = (long)delta;
-		return sem_timedwait(&sem->sem, &t) == 0;
+		ret = sem_timedwait(&sem->sem, &t) == 0;
 	} else {
-
-		return sem_trywait(&sem->sem) == 0;
+		ret = sem_trywait(&sem->sem) == 0;
 	}
+	hl_blocking(false);
+	return ret;
 #	endif
 #	endif
 }
@@ -331,9 +349,13 @@ HL_PRIM hl_condition *hl_condition_alloc() {
 HL_PRIM void hl_condition_acquire(hl_condition *cond) {
 #	if !defined(HL_THREADS)
 #	elif defined(HL_WIN)
+	hl_blocking(true);
 	EnterCriticalSection(&cond->cs);
+	hl_blocking(false);
 #	else
+	hl_blocking(true);
 	pthread_mutex_lock(&cond->mutex);
+	hl_blocking(false);
 #	endif
 }
 
@@ -358,9 +380,13 @@ HL_PRIM void hl_condition_release(hl_condition *cond) {
 HL_PRIM void hl_condition_wait(hl_condition *cond) {
 #	if !defined(HL_THREADS)
 #	elif defined(HL_WIN)
+	hl_blocking(true);
 	SleepConditionVariableCS(&cond->cond, &cond->cs, INFINITE);
+	hl_blocking(false);
 #	else
+	hl_blocking(true);
 	pthread_cond_wait(&cond->cond, &cond->mutex);
+	hl_blocking(false);
 #	endif
 }
 
@@ -368,8 +394,10 @@ HL_PRIM bool hl_condition_timed_wait(hl_condition *cond, double timeout) {
 #	if !defined(HL_THREADS)
 	return true;
 #	elif defined(HL_WIN)
+	hl_blocking(true);
 	SleepConditionVariableCS(&cond->cond, &cond->cs,
 	                         (DWORD)((FLOAT)timeout * 1000.0));
+	hl_blocking(false);
 	return true;
 #	else
 	struct timeval tv;
@@ -384,7 +412,10 @@ HL_PRIM bool hl_condition_timed_wait(hl_condition *cond, double timeout) {
 	delta -= idelta2 * 1e9;
 	t.tv_sec = tv.tv_sec + idelta + idelta2;
 	t.tv_nsec = (long)delta;
-	return pthread_cond_timedwait(&cond->cond, &cond->mutex, &t) == 0;
+	hl_blocking(true);
+	bool ret = pthread_cond_timedwait(&cond->cond, &cond->mutex, &t) == 0;
+	hl_blocking(false);
+	return ret;
 #	endif
 }
 
@@ -432,6 +463,23 @@ DEFINE_PRIM(_VOID, condition_broadcast, _CONDITION)
 
 // ----------------- THREAD LOCAL
 
+#if defined(HL_THREADS)
+static void **_tls_get( hl_tls *t ) {
+#	ifdef HL_WIN
+	return (void**)TlsGetValue(t->tid);
+#	else
+	return (void**)pthread_getspecific(t->key);
+#	endif
+}
+static void _tls_set( hl_tls *t, void *store ) {
+#	ifdef HL_WIN
+	TlsSetValue(t->tid, store);
+#	else
+	pthread_setspecific(t->key, store);
+#	endif
+}
+#endif
+
 HL_PRIM hl_tls *hl_tls_alloc( bool gc_value ) {
 #	if !defined(HL_THREADS)
 	hl_tls *l = (hl_tls*)hl_gc_alloc_finalizer(sizeof(hl_tls));
@@ -442,11 +490,13 @@ HL_PRIM hl_tls *hl_tls_alloc( bool gc_value ) {
 	hl_tls *l = (hl_tls*)hl_gc_alloc_finalizer(sizeof(hl_tls));
 	l->free = hl_tls_free;
 	l->tid = TlsAlloc();
+	l->gc = gc_value;
 	TlsSetValue(l->tid,NULL);
 	return l;
 #	else
 	hl_tls *l = (hl_tls*)hl_gc_alloc_finalizer(sizeof(hl_tls));
 	l->free = hl_tls_free;
+	l->gc = gc_value;
 	pthread_key_create(&l->key,NULL);
 	return l;
 #	endif
@@ -471,20 +521,36 @@ HL_PRIM void hl_tls_free( hl_tls *l ) {
 HL_PRIM void hl_tls_set( hl_tls *l, void *v ) {
 #	if !defined(HL_THREADS)
 	l->value = v;
-#	elif defined(HL_WIN)
-	TlsSetValue(l->tid,v);
 #	else
-	pthread_setspecific(l->key,v);
+	if( l->gc ) {
+		void **store = _tls_get(l);
+		if( !store) {
+			if( !v )
+				return;
+			store = (void**)malloc(sizeof(void*));
+			hl_add_root(store);
+			_tls_set(l, store);
+		} else {
+			if( !v ) {
+				free(store);
+				hl_remove_root(store);
+				_tls_set(l, NULL);
+				return;
+			}
+		}
+		*store = v;
+	} else
+		_tls_set(l, v);
 #	endif
 }
 
 HL_PRIM void *hl_tls_get( hl_tls *l ) {
 #	if !defined(HL_THREADS)
 	return l->value;
-#	elif defined(HL_WIN)
-	return (void*)TlsGetValue(l->tid);
 #	else
-	return pthread_getspecific(l->key);
+	void **store = _tls_get(l);
+	if( !l->gc ) return store;
+	return store ? *store : NULL;
 #	endif
 }
 
@@ -775,7 +841,6 @@ HL_PRIM int hl_thread_id() {
 #elif defined(SYS_gettid) && !defined(HL_TVOS)
 	return syscall(SYS_gettid);
 #else
-	hl_error("hl_thread_id() not available for this platform");
 	return -1;
 #endif
 }
@@ -783,14 +848,16 @@ HL_PRIM int hl_thread_id() {
 typedef struct {
 	void (*callb)( void *);
 	void *param;
+	hl_lock *wait;
 } thread_start;
 
 #ifdef HL_THREADS
 static void gc_thread_entry( thread_start *_s ) {
 	thread_start s = *_s;
 	hl_register_thread(&s);
-	hl_remove_root(&_s->param);
-	free(_s);
+	hl_lock_release(_s->wait);
+	s.wait = _s->wait = NULL;
+	_s = NULL;
 	s.callb(s.param);
 	hl_unregister_thread();
 }
@@ -799,10 +866,10 @@ static void gc_thread_entry( thread_start *_s ) {
 HL_PRIM hl_thread *hl_thread_start( void *callback, void *param, bool withGC ) {
 #ifdef HL_THREADS
 	if( withGC ) {
-		thread_start *s = (thread_start*)malloc(sizeof(thread_start));
+		thread_start *s = (thread_start*)hl_gc_alloc_raw(sizeof(thread_start));
 		s->callb = callback;
 		s->param = param;
-		hl_add_root(&s->param);
+		s->wait = hl_lock_create();
 		callback = gc_thread_entry;
 		param = s;
 	}
@@ -816,6 +883,10 @@ HL_PRIM hl_thread *hl_thread_start( void *callback, void *param, bool withGC ) {
 	if( h == NULL )
 		return NULL;
 	CloseHandle(h);
+	if( withGC ) {
+		hl_lock *l = ((thread_start*)param)->wait;
+		if( l ) hl_lock_wait(l, NULL);
+	}
 	return (hl_thread*)(int_val)tid;
 #else
 	pthread_t t;
@@ -827,28 +898,279 @@ HL_PRIM hl_thread *hl_thread_start( void *callback, void *param, bool withGC ) {
 		return NULL;
 	}
 	pthread_attr_destroy(&attr);
+	if( withGC ) {
+		hl_lock *l = ((thread_start*)param)->wait;
+		if( l ) hl_lock_wait(l, NULL);
+	}
 	return (hl_thread*)t;
 #endif
 }
 
 static void hl_run_thread( vclosure *c ) {
 	bool isExc;
-	varray *a;
-	int i;
 	vdynamic *exc = hl_dyn_call_safe(c,NULL,0,&isExc);
 	if( !isExc )
 		return;
-	a = hl_exception_stack();
-	uprintf(USTR("Uncaught exception: %s\n"), hl_to_string(exc));
-	for(i=0;i<a->size;i++)
-		uprintf(USTR("Called from %s\n"), hl_aptr(a,uchar*)[i]);
-	fflush(stdout);
+	hl_print_uncaught_exception(exc);
 }
 
 HL_PRIM hl_thread *hl_thread_create( vclosure *c ) {
 	return hl_thread_start(hl_run_thread,c,true);
 }
 
+#if defined(HL_WIN) && defined(HL_THREADS)
+#ifdef HL_MINGW
+static void SetThreadName(DWORD dwThreadID, const char* threadName) {
+	SetThreadDescription(
+		OpenThread(THREAD_SET_LIMITED_INFORMATION, FALSE, dwThreadID),
+		hl_to_utf16(threadName)
+	);
+}
+#else
+const DWORD MS_VC_EXCEPTION = 0x406D1388;
+#pragma pack(push,8)
+typedef struct tagTHREADNAME_INFO
+{
+    DWORD dwType; // Must be 0x1000.
+    LPCSTR szName; // Pointer to name (in user addr space).
+    DWORD dwThreadID; // Thread ID (-1=caller thread).
+    DWORD dwFlags; // Reserved for future use, must be zero.
+} THREADNAME_INFO;
+#pragma pack(pop)
+void SetThreadName(DWORD dwThreadID, const char* threadName) {
+    THREADNAME_INFO info;
+    info.dwType = 0x1000;
+    info.szName = threadName;
+    info.dwThreadID = dwThreadID;
+    info.dwFlags = 0;
+#pragma warning(push)
+#pragma warning(disable: 6320 6322)
+    __try{
+        RaiseException(MS_VC_EXCEPTION, 0, sizeof(info) / sizeof(ULONG_PTR), (ULONG_PTR*)&info);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER){
+    }
+#pragma warning(pop)
+}
+#endif
+#endif
+
+HL_PRIM int hl_get_thread_id( hl_thread *t ) {
+#	if !defined(HL_THREADS)
+	return 0;
+#elif defined(HL_WIN)
+	return (DWORD)(int_val)t;
+#elif defined(HL_MAC)
+	uint64_t tid64;
+	pthread_threadid_np((pthread_t)t, &tid64);
+	return (pid_t)tid64;
+#else
+	return -1; // no way to get that on linux :'(
+#endif
+}
+
+HL_PRIM void hl_thread_set_name( hl_thread *t, const char *name ) {
+#if !defined(HL_THREADS)
+	// nothing
+#elif defined(HL_WIN)
+	SetThreadName((DWORD)(int_val)t,name);
+#elif defined(HL_MAC) || defined(HL_IOS)
+	// pthread_setname_np only possible for current thread
+#else
+	pthread_setname_np((pthread_t)t,name);
+#endif
+#ifdef HL_THREADS
+	hl_threads_info *threads = hl_gc_threads_info();
+	hl_thread_info *tinf;
+	int tid = hl_get_thread_id(t);
+	int len = (int)strlen(name);
+	if( len >= 127 ) len = 126;
+	for(int i=0;i<threads->count;i++) {
+		tinf = threads->threads[i];
+		if( tinf->thread_id == tid ) {
+			memcpy(tinf->thread_name, name, len);
+			tinf->thread_name[len + 1] = 0;
+		}
+	}
+#endif
+}
+
+HL_PRIM vbyte *hl_thread_get_name( hl_thread *t ) {
+#ifdef HL_THREADS
+	hl_threads_info *threads = hl_gc_threads_info();
+	hl_thread_info *tinf;
+	int tid = hl_get_thread_id(t);
+	for(int i=0;i<threads->count;i++) {
+		tinf = threads->threads[i];
+		if( tinf->thread_id == tid )
+			return *tinf->thread_name ? (vbyte*)tinf->thread_name : NULL;
+	}
+#endif
+	return NULL;
+}
+
+
 #define _THREAD _ABSTRACT(hl_thread)
 DEFINE_PRIM(_THREAD, thread_current, _NO_ARG);
 DEFINE_PRIM(_THREAD, thread_create, _FUN(_VOID,_NO_ARG));
+DEFINE_PRIM(_VOID, thread_set_name, _THREAD _BYTES);
+DEFINE_PRIM(_BYTES, thread_get_name, _THREAD);
+
+// ----------------- ATOMICS
+
+// Assumptions made:
+//    Everyone uses GCC, Clang or MSVC
+//    People are not using 8 year old versions of GCC.
+
+#if defined(HL_GCC) || defined(HL_CLANG)
+#define HL_GCC_ATOMICS
+#elif defined(HL_VCC)
+#define HL_VCC_ATOMICS
+#include <intrin.h>
+#else // Nearly everyone uses GCC, Clang or MSVC, right?
+#error                                                                         \
+    "Neither GCC, clang or MSVC is being used. Please contribute the relevant atomic instrinsics for your compiler."
+#endif
+
+HL_PRIM int hl_atomic_add32(int *a, int b) {
+#if defined(HL_GCC_ATOMICS)
+  return __atomic_fetch_add(a, b, __ATOMIC_SEQ_CST);
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedExchangeAdd((long volatile *)a, b);
+#endif
+}
+
+HL_PRIM int hl_atomic_sub32(int *a, int b) {
+#if defined(HL_GCC_ATOMICS)
+  return __atomic_fetch_sub(a, b, __ATOMIC_SEQ_CST);
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedExchangeAdd((long volatile *)a, -b);
+#endif
+}
+
+HL_PRIM int hl_atomic_and32(int *a, int b) {
+#if defined(HL_GCC_ATOMICS)
+  return __atomic_fetch_and(a, b, __ATOMIC_SEQ_CST);
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedAnd((long volatile *)a, b);
+#endif
+}
+
+HL_PRIM int hl_atomic_or32(int *a, int b) {
+#if defined(HL_GCC_ATOMICS)
+  return __atomic_fetch_or(a, b, __ATOMIC_SEQ_CST);
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedOr((long volatile *)a, b);
+#endif
+}
+
+HL_PRIM int hl_atomic_xor32(int *a, int b) {
+#if defined(HL_GCC_ATOMICS)
+  return __atomic_fetch_xor(a, b, __ATOMIC_SEQ_CST);
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedXor((long volatile *)a, b);
+#endif
+}
+
+HL_PRIM int hl_atomic_compare_exchange32(int *a, int expected,
+                                         int replacement) {
+#if defined(HL_GCC_ATOMICS)
+  int _expected = expected;
+  __atomic_compare_exchange(a, &_expected, &replacement, false,
+                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+  return _expected;
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedCompareExchange((long volatile *)a, replacement, expected);
+#endif
+}
+
+HL_PRIM void *hl_atomic_compare_exchange_ptr(void **a, void *expected,
+                                             void *replacement) {
+#if defined(HL_GCC_ATOMICS)
+  void *_expected = expected;
+  __atomic_compare_exchange(a, &_expected, &replacement, false,
+                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+  return _expected;
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedCompareExchangePointer((void *volatile *)a, replacement,
+                                            expected);
+#endif
+}
+
+HL_PRIM int hl_atomic_exchange32(int *a, int replacement) {
+#if defined(HL_GCC_ATOMICS)
+  int ret = 0;
+  __atomic_exchange(a, &replacement, &ret, __ATOMIC_SEQ_CST);
+  return ret;
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedExchange((long volatile *)a, replacement);
+#endif
+}
+
+HL_PRIM void *hl_atomic_exchange_ptr(void **a, void *replacement) {
+#if defined(HL_GCC_ATOMICS)
+  void *ret = 0;
+  __atomic_exchange(a, &replacement, &ret, __ATOMIC_SEQ_CST);
+  return ret;
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedExchangePointer((void *volatile *)a, replacement);
+#endif
+}
+
+HL_PRIM int hl_atomic_load32(int *a) {
+#if defined(HL_GCC_ATOMICS)
+  int ret = 0;
+  __atomic_load(a, &ret, __ATOMIC_SEQ_CST);
+  return ret;
+#elif defined(HL_VCC_ATOMICS)
+  return _InterlockedXor((long volatile *)a, 0);
+#endif
+}
+
+HL_PRIM void *hl_atomic_load_ptr(void **a) {
+#if defined(HL_GCC_ATOMICS)
+  void *ret = 0;
+  __atomic_load(a, &ret, __ATOMIC_SEQ_CST);
+  return ret;
+#elif defined(HL_VCC_ATOMICS)
+#ifdef HL_64
+  return (void *)_InterlockedXor64((__int64 volatile *)a, 0);
+#else
+  return (void *)_InterlockedXor((long volatile *)a, 0);
+#endif
+#endif
+}
+
+HL_PRIM int hl_atomic_store32(int *a, int value) {
+#if defined(HL_GCC_ATOMICS)
+  __atomic_store(a, &value, __ATOMIC_SEQ_CST);
+  return value;
+#elif defined(HL_VCC_ATOMICS)
+  _InterlockedExchange((long volatile *)a, value);
+  return value;
+#endif
+}
+
+HL_PRIM void *hl_atomic_store_ptr(void **a, void *value) {
+#if defined(HL_GCC_ATOMICS)
+  __atomic_store(a, &value, __ATOMIC_SEQ_CST);
+  return value;
+#elif defined(HL_VCC_ATOMICS)
+  _InterlockedExchangePointer((void *volatile *)a, value);
+  return value;
+#endif
+}
+
+DEFINE_PRIM(_I32, atomic_add32, _REF(_I32) _I32)
+DEFINE_PRIM(_I32, atomic_sub32, _REF(_I32) _I32)
+DEFINE_PRIM(_I32, atomic_and32, _REF(_I32) _I32)
+DEFINE_PRIM(_I32, atomic_or32, _REF(_I32) _I32)
+DEFINE_PRIM(_I32, atomic_xor32, _REF(_I32) _I32)
+DEFINE_PRIM(_I32, atomic_compare_exchange32, _REF(_I32) _I32 _I32)
+DEFINE_PRIM(_DYN, atomic_compare_exchange_ptr, _REF(_DYN) _DYN _DYN)
+DEFINE_PRIM(_I32, atomic_exchange32, _REF(_I32) _I32)
+DEFINE_PRIM(_DYN, atomic_exchange_ptr, _REF(_DYN) _DYN)
+DEFINE_PRIM(_I32, atomic_load32, _REF(_I32))
+DEFINE_PRIM(_DYN, atomic_load_ptr, _REF(_DYN))
+DEFINE_PRIM(_I32, atomic_store32, _REF(_I32) _I32)
+DEFINE_PRIM(_DYN, atomic_store_ptr, _REF(_DYN) _DYN)

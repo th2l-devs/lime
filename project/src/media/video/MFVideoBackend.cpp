@@ -31,6 +31,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <stdlib.h>
 #include <string>
 #include <utility>
 
@@ -55,7 +56,9 @@ namespace lime {
 	typedef HRESULT (WINAPI *MFCreateAttributesFunc) (IMFAttributes**, UINT32);
 	typedef HRESULT (WINAPI *MFCreateDXGIDeviceManagerFunc) (UINT*, IMFDXGIDeviceManager**);
 	typedef HRESULT (WINAPI *MFCreateMediaTypeFunc) (IMFMediaType**);
+	typedef HRESULT (WINAPI *MFCreateSourceReaderFromByteStreamFunc) (IMFByteStream*, IMFAttributes*, IMFSourceReader**);
 	typedef HRESULT (WINAPI *MFCreateSourceReaderFromURLFunc) (LPCWSTR, IMFAttributes*, IMFSourceReader**);
+	typedef HRESULT (WINAPI *MFCreateSourceResolverFunc) (IMFSourceResolver**);
 	typedef HRESULT (WINAPI *MFShutdownFunc) ();
 	typedef HRESULT (WINAPI *MFStartupFunc) (ULONG, DWORD);
 
@@ -70,6 +73,253 @@ namespace lime {
 	// Texture output converts frames on the GPU into a ring of RGB textures,
 	// enough for the decoder's queue, the frame on screen and one being written
 	static const int OUTPUT_TEXTURES = 8;
+
+	// How long a seek waits for reads in progress before giving up on them, as
+	// reads from a source that is still sending finish well within it
+	static const int SEEK_WAIT_MS = 250;
+
+	// MFVideoTransFunc_2084 and _HLG, MFVideoPrimaries_BT2020 and
+	// MFVideoTransferMatrix_BT2020_10, which older SDKs lack
+	static const UINT32 TRANSFER_PQ = 15;
+	static const UINT32 TRANSFER_HLG = 16;
+	static const UINT32 PRIMARIES_BT2020 = 9;
+	static const UINT32 MATRIX_BT2020 = 4;
+
+
+	// Reads bits from an H.264 parameter set, skipping emulation prevention
+	class MFBitReader {
+
+
+		public:
+
+			MFBitReader (const UINT8* data, size_t size) : bit (0), data (data), size (size), zeros (0) {}
+
+			bool Bit () {
+
+				if (bit == 0) {
+
+					// A 3 after two zeros only keeps a start code from appearing
+					if (zeros >= 2 && size > 0 && *data == 3) {
+
+						data++;
+						size--;
+						zeros = 0;
+
+					}
+
+					if (size == 0) return false;
+
+				}
+
+				bool value = ((*data >> (7 - bit)) & 1) != 0;
+
+				if (++bit == 8) {
+
+					zeros = *data == 0 ? zeros + 1 : 0;
+					bit = 0;
+					data++;
+					size--;
+
+				}
+
+				return value;
+
+			}
+
+			UINT32 Bits (int count) {
+
+				UINT32 value = 0;
+				for (int i = 0; i < count; i++) value = (value << 1) | (Bit () ? 1 : 0);
+				return value;
+
+			}
+
+			UINT32 Exp () {
+
+				int count = 0;
+				while (!Bit () && count < 32) count++;
+				return (UINT32)((1ULL << count) - 1) + Bits (count);
+
+			}
+
+			int SignedExp () {
+
+				UINT32 value = Exp ();
+				return (value & 1) ? (int)((value + 1) / 2) : -(int)(value / 2);
+
+			}
+
+
+		private:
+
+			int bit;
+			const UINT8* data;
+			size_t size;
+			int zeros;
+
+
+	};
+
+
+	static VideoColorTransfer ReadH264Transfer (const UINT8* sps, size_t size) {
+
+		// The transfer characteristics in the SPS's video usability information
+		MFBitReader reader (sps, size);
+		reader.Bits (8);
+		UINT32 profile = reader.Bits (8);
+		reader.Bits (16);
+		reader.Exp ();
+
+		if (profile == 100 || profile == 110 || profile == 122 || profile == 244 || profile == 44 || profile == 83 || profile == 86 || profile == 118 || profile == 128 || profile == 138 || profile == 139 || profile == 134 || profile == 135) {
+
+			UINT32 chroma = reader.Exp ();
+			if (chroma == 3) reader.Bit ();
+			reader.Exp ();
+			reader.Exp ();
+			reader.Bit ();
+
+			if (reader.Bit ()) {
+
+				for (int i = 0; i < (chroma != 3 ? 8 : 12); i++) {
+
+					if (!reader.Bit ()) continue;
+
+					int last = 8;
+					int next = 8;
+
+					for (int j = 0; j < (i < 6 ? 16 : 64) && next != 0; j++) {
+
+						next = (last + reader.SignedExp () + 256) % 256;
+						if (next != 0) last = next;
+
+					}
+
+				}
+
+			}
+
+		}
+
+		reader.Exp ();
+		UINT32 order = reader.Exp ();
+
+		if (order == 0) {
+
+			reader.Exp ();
+
+		} else if (order == 1) {
+
+			reader.Bit ();
+			reader.SignedExp ();
+			reader.SignedExp ();
+			UINT32 cycle = reader.Exp ();
+			for (UINT32 i = 0; i < cycle && i < 256; i++) reader.SignedExp ();
+
+		}
+
+		reader.Exp ();
+		reader.Bit ();
+		reader.Exp ();
+		reader.Exp ();
+		if (!reader.Bit ()) reader.Bit ();
+		reader.Bit ();
+
+		if (reader.Bit ()) {
+
+			reader.Exp ();
+			reader.Exp ();
+			reader.Exp ();
+			reader.Exp ();
+
+		}
+
+		if (!reader.Bit ()) return VIDEO_COLOR_TRANSFER_SDR;
+
+		if (reader.Bit () && reader.Bits (8) == 255) reader.Bits (32);
+		if (reader.Bit ()) reader.Bit ();
+		if (!reader.Bit ()) return VIDEO_COLOR_TRANSFER_SDR;
+
+		reader.Bits (4);
+		if (!reader.Bit ()) return VIDEO_COLOR_TRANSFER_SDR;
+
+		reader.Bits (8);
+		UINT32 transfer = reader.Bits (8);
+		return transfer == 16 ? VIDEO_COLOR_TRANSFER_PQ : (transfer == 18 ? VIDEO_COLOR_TRANSFER_HLG : VIDEO_COLOR_TRANSFER_SDR);
+
+	}
+
+
+	static void ReleaseReader (IMFSourceReader** reader, bool shutDown) {
+
+		// A reader of a network source that stalled takes seconds to release,
+		// as Media Foundation waits on it, unless its media source is shut down
+		// first, which is safe once no read is in progress
+		if (!*reader) return;
+
+		if (shutDown) {
+
+			IMFMediaSource* source = NULL;
+			GUID none = {};
+
+			if (SUCCEEDED ((*reader)->GetServiceForStream (MF_SOURCE_READER_MEDIASOURCE, none, IID_PPV_ARGS (&source))) && source) {
+
+				source->Shutdown ();
+				source->Release ();
+
+			}
+
+		}
+
+		(*reader)->Release ();
+		*reader = NULL;
+
+	}
+
+
+	static VideoColorTransfer ReadTransfer (IMFMediaType* type) {
+
+		UINT32 transfer = MFGetAttributeUINT32 (type, MF_MT_TRANSFER_FUNCTION, 0);
+		if (transfer == TRANSFER_PQ) return VIDEO_COLOR_TRANSFER_PQ;
+		if (transfer == TRANSFER_HLG) return VIDEO_COLOR_TRANSFER_HLG;
+
+		// Media Foundation does not say for H.264, so its SPS is read, from the
+		// start codes before it or the avcC record it comes in
+		GUID subtype = {};
+		UINT8* header = NULL;
+		UINT32 size = 0;
+
+		if (FAILED (type->GetGUID (MF_MT_SUBTYPE, &subtype)) || subtype != MFVideoFormat_H264 || FAILED (type->GetAllocatedBlob (MF_MT_MPEG_SEQUENCE_HEADER, &header, &size))) {
+
+			return VIDEO_COLOR_TRANSFER_SDR;
+
+		}
+
+		VideoColorTransfer result = VIDEO_COLOR_TRANSFER_SDR;
+
+		if (size > 8 && header[0] == 1) {
+
+			UINT32 length = (header[6] << 8) | header[7];
+			if ((header[5] & 31) > 0 && 8 + length <= size && length > 0) result = ReadH264Transfer (header + 8, length);
+
+		} else {
+
+			for (UINT32 i = 0; i + 3 < size; i++) {
+
+				if (header[i] == 0 && header[i + 1] == 0 && header[i + 2] == 1 && (header[i + 3] & 31) == 7) {
+
+					result = ReadH264Transfer (header + i + 3, size - i - 3);
+					break;
+
+				}
+
+			}
+
+		}
+
+		CoTaskMemFree (header);
+		return result;
+
+	}
 
 	#ifdef LIME_VIDEO_WGL_INTEROP
 	// WGL_NV_DX_interop2, which shares Direct3D 11 textures with OpenGL
@@ -93,8 +343,10 @@ namespace lime {
 
 	struct MFOutputTexture {
 
-		GLuint glTexture;
+		unsigned int glTexture;
 		HANDLE interop;
+		// Locked for OpenGL, as the frame being shown is
+		bool locked;
 		ID3D11Texture2D* texture;
 		ID3D11VideoProcessorOutputView* view;
 
@@ -113,7 +365,9 @@ namespace lime {
 	static MFCreateAttributesFunc _MFCreateAttributes = 0;
 	static MFCreateDXGIDeviceManagerFunc _MFCreateDXGIDeviceManager = 0;
 	static MFCreateMediaTypeFunc _MFCreateMediaType = 0;
+	static MFCreateSourceReaderFromByteStreamFunc _MFCreateSourceReaderFromByteStream = 0;
 	static MFCreateSourceReaderFromURLFunc _MFCreateSourceReaderFromURL = 0;
+	static MFCreateSourceResolverFunc _MFCreateSourceResolver = 0;
 	static MFShutdownFunc _MFShutdown = 0;
 	static MFStartupFunc _MFStartup = 0;
 
@@ -121,12 +375,27 @@ namespace lime {
 	static bool loaded = false;
 
 
+	static HMODULE LoadSystemLibrary (const wchar_t* name) {
+
+		// From the system directory only, so a DLL of the same name beside the
+		// application or in the working directory is not loaded instead
+		wchar_t path[MAX_PATH];
+		UINT length = GetSystemDirectoryW (path, MAX_PATH);
+		if (length == 0 || length + wcslen (name) + 2 > MAX_PATH) return NULL;
+
+		path[length] = L'\\';
+		wcscpy (path + length + 1, name);
+		return LoadLibraryW (path);
+
+	}
+
+
 	static bool LoadMediaFoundation () {
 
 		std::call_once (loadFlag, [] {
 
-			HMODULE mfplat = LoadLibraryW (L"mfplat.dll");
-			HMODULE mfreadwrite = LoadLibraryW (L"mfreadwrite.dll");
+			HMODULE mfplat = LoadSystemLibrary (L"mfplat.dll");
+			HMODULE mfreadwrite = LoadSystemLibrary (L"mfreadwrite.dll");
 
 			if (!mfplat || !mfreadwrite) return;
 
@@ -136,8 +405,10 @@ namespace lime {
 			_MFShutdown = (MFShutdownFunc)GetProcAddress (mfplat, "MFShutdown");
 			_MFStartup = (MFStartupFunc)GetProcAddress (mfplat, "MFStartup");
 			_MFCreateSourceReaderFromURL = (MFCreateSourceReaderFromURLFunc)GetProcAddress (mfreadwrite, "MFCreateSourceReaderFromURL");
+			_MFCreateSourceReaderFromByteStream = (MFCreateSourceReaderFromByteStreamFunc)GetProcAddress (mfreadwrite, "MFCreateSourceReaderFromByteStream");
+			_MFCreateSourceResolver = (MFCreateSourceResolverFunc)GetProcAddress (mfplat, "MFCreateSourceResolver");
 
-			HMODULE d3d11 = LoadLibraryW (L"d3d11.dll");
+			HMODULE d3d11 = LoadSystemLibrary (L"d3d11.dll");
 			if (d3d11) _D3D11CreateDevice = (PFN_D3D11_CREATE_DEVICE)GetProcAddress (d3d11, "D3D11CreateDevice");
 
 			loaded = (_MFCreateAttributes && _MFCreateMediaType && _MFShutdown && _MFStartup && _MFCreateSourceReaderFromURL);
@@ -149,19 +420,71 @@ namespace lime {
 	}
 
 
+	struct MFThreadApartment {
+
+		bool initialized;
+
+		MFThreadApartment () : initialized (false) {}
+		~MFThreadApartment () { if (initialized) CoUninitialize (); }
+
+	};
+
+
 	static void InitializeCOM () {
 
 		// Media Foundation objects are free-threaded, so each decoding thread
-		// joins the multithreaded apartment. A thread that is already in an
-		// apartment keeps it.
-		static thread_local bool initialized = false;
+		// joins the multithreaded apartment until it ends
+		static thread_local MFThreadApartment apartment;
 
-		if (!initialized) {
+		if (!apartment.initialized) {
 
-			CoInitializeEx (NULL, COINIT_MULTITHREADED);
-			initialized = true;
+			apartment.initialized = SUCCEEDED (CoInitializeEx (NULL, COINIT_MULTITHREADED));
 
 		}
+
+	}
+
+
+	static void UseMultithreadedApartment () {
+
+		// The application's threads are not put in an apartment, which would
+		// stop one joining the apartment it needs later, such as for drag and
+		// drop. The multithreaded apartment is kept instead, which threads that
+		// are in none use, and other threads use Media Foundation from theirs.
+		static std::once_flag flag;
+
+		std::call_once (flag, [] {
+
+			typedef HRESULT (WINAPI *CoIncrementMTAUsageFunc) (void**);
+			HMODULE ole32 = GetModuleHandleW (L"ole32.dll");
+			CoIncrementMTAUsageFunc increment = ole32 ? (CoIncrementMTAUsageFunc)GetProcAddress (ole32, "CoIncrementMTAUsage") : NULL;
+			void* cookie = NULL;
+
+			if (increment && SUCCEEDED (increment (&cookie))) return;
+
+			// Windows 7 keeps the apartment with a thread that stays in it
+			std::mutex mutex;
+			std::condition_variable condition;
+			bool ready = false;
+
+			std::thread ([&mutex, &condition, &ready] {
+
+				CoInitializeEx (NULL, COINIT_MULTITHREADED);
+
+				{
+					std::lock_guard<std::mutex> lock (mutex);
+					ready = true;
+				}
+
+				condition.notify_one ();
+				Sleep (INFINITE);
+
+			}).detach ();
+
+			std::unique_lock<std::mutex> lock (mutex);
+			condition.wait (lock, [&ready] { return ready; });
+
+		});
 
 	}
 
@@ -188,6 +511,110 @@ namespace lime {
 	}
 
 
+	// The connection a reader reads through, which closing and seeking give up
+	// when it waits on a stalled network source
+	struct MFConnection {
+
+		MFConnection () : busy (false), byteStream (NULL), cancelCookie (NULL), cancelled (false), reopen (false), reopenPosition (0), resolver (NULL) {}
+
+		// Reading or opening, under the stream mutex
+		bool busy;
+
+		IMFByteStream* byteStream;
+		IUnknown* cancelCookie;
+		std::atomic<bool> cancelled;
+
+		// Given up by a seek, so the reader opens again from reopenPosition
+		std::atomic<bool> reopen;
+		LONGLONG reopenPosition;
+
+		IMFSourceResolver* resolver;
+
+	};
+
+
+	// Receives the byte stream a source resolver opens, which a cancelled open
+	// may still deliver after the reader stopped waiting for it
+	class MFResolveCallback : public IMFAsyncCallback {
+
+
+		public:
+
+			MFResolveCallback (IMFSourceResolver* resolver) : object (NULL), references (1), resolver (resolver), result (E_PENDING) {
+
+				resolver->AddRef ();
+				done = CreateEventW (NULL, TRUE, FALSE, NULL);
+
+			}
+
+			~MFResolveCallback () {
+
+				if (object) object->Release ();
+				if (done) CloseHandle (done);
+				resolver->Release ();
+
+			}
+
+			STDMETHODIMP QueryInterface (REFIID riid, void** value) {
+
+				if (riid == __uuidof (IMFAsyncCallback) || riid == __uuidof (IUnknown)) {
+
+					*value = static_cast<IMFAsyncCallback*> (this);
+					AddRef ();
+					return S_OK;
+
+				}
+
+				*value = NULL;
+				return E_NOINTERFACE;
+
+			}
+
+			STDMETHODIMP_(ULONG) AddRef () { return InterlockedIncrement (&references); }
+
+			STDMETHODIMP_(ULONG) Release () {
+
+				ULONG count = InterlockedDecrement (&references);
+				if (count == 0) delete this;
+				return count;
+
+			}
+
+			STDMETHODIMP GetParameters (DWORD* flags, DWORD* queue) { return E_NOTIMPL; }
+
+			STDMETHODIMP Invoke (IMFAsyncResult* asyncResult) {
+
+				MF_OBJECT_TYPE type = MF_OBJECT_INVALID;
+				result = resolver->EndCreateObjectFromURL (asyncResult, &type, &object);
+				SetEvent (done);
+				return S_OK;
+
+			}
+
+			// Once done is set
+			IUnknown* TakeObject () {
+
+				IUnknown* value = SUCCEEDED (result) ? object : NULL;
+				if (!value && object) object->Release ();
+				object = NULL;
+				return value;
+
+			}
+
+			HANDLE done;
+
+
+		private:
+
+			IUnknown* object;
+			LONG references;
+			IMFSourceResolver* resolver;
+			HRESULT result;
+
+
+	};
+
+
 	class MFVideoBackend : public VideoBackend {
 
 
@@ -199,7 +626,9 @@ namespace lime {
 			virtual void Close ();
 			virtual VideoDecodeResult DecodeAudio (std::vector<unsigned char>* pcm, double* time);
 			virtual VideoDecodeResult DecodeVideo (VideoPlanes* planes, double* time, double* duration);
+			virtual void Interrupt ();
 			virtual bool Open (const char* path, bool hardwareDecoding, VideoStreamInfo* info);
+			virtual void PrepareSeek ();
 			virtual bool Seek (double time);
 
 		private:
@@ -208,29 +637,46 @@ namespace lime {
 			bool CopyToStaging (IMFSample* sample, LONGLONG timestamp, LONGLONG sampleDuration);
 			bool CreateDeviceManager ();
 			bool CreateProcessor (UINT inputWidth, UINT inputHeight);
+			IMFSourceReader* CreateReader (IMFAttributes* attributes, MFConnection* connection);
 			void GetPlanes (VideoPlanes* planes, BYTE* data, int pitch, int lumaRows);
+			void GiveUp (MFConnection* connection);
 			VideoDecodeResult MapStaging (VideoPlanes* planes, double* time, double* duration);
 			bool OpenAudio ();
 			bool OpenVideo (bool hardware);
+			void ReadAudioFormat ();
+			bool OpenVideoReader (bool hardware, bool advanced, bool keepDevice = false);
+			HRESULT ReadSample (IMFSourceReader* reader, DWORD stream, MFConnection* connection, DWORD* flags, LONGLONG* timestamp, IMFSample** sample);
 			void ReadVideoFormat ();
 			void ReleaseDeviceManager ();
 			void ReleaseProcessor ();
+			VideoDecodeResult ReopenAudio ();
+			VideoDecodeResult ReopenVideo ();
+			IUnknown* ResolveURL (IMFSourceResolver* resolver, MFConnection* connection);
+			bool SetBusy (MFConnection* connection, bool busy);
+			void SetByteStream (MFConnection* connection, IMFByteStream* value);
 			bool SwitchToSoftware ();
 			void UnlockVideo ();
 
 			virtual VideoDecodeResult DecodeVideoTexture (VideoTextureFrame** frame, double* time, double* duration);
 			virtual unsigned int LockTexture (VideoTextureFrame* frame);
 			virtual void ReleaseTextureFrame (VideoTextureFrame* frame);
+			virtual void ReleaseOrphans ();
 			virtual void ReleaseTextures ();
 			virtual bool SupportsTextures ();
 			virtual void UnlockTexture (VideoTextureFrame* frame);
 
 			int audioChannels;
+			VideoAudioConverter audioConverter;
+			int audioPacketChannels;
+			int audioPacketRate;
+			MFConnection audioConnection;
 			IMFSourceReader* audioReader;
 			int audioSampleRate;
 			int audioSourceChannels;
+			bool audioStreamFound;
 			int bufferHeight;
 			int bufferWidth;
+			bool canSeek;
 			VideoColorMatrix colorMatrix;
 			int cropHeight;
 			int cropWidth;
@@ -251,13 +697,20 @@ namespace lime {
 			UINT processorWidth;
 			IMFDXGIDeviceManager* deviceManager;
 			double frameRate;
+			VideoColorTransfer frameTransfer;
 			bool fullRange;
 			bool hardwareActive;
 			std::map<std::pair<ID3D11Texture2D*, UINT>, ID3D11VideoProcessorInputView*> inputViews;
+			std::atomic<bool> interrupted;
 			HANDLE interopDevice;
+			void* interopContext;
 			bool interopFailed;
+			LONGLONG lastFrameTime;
 			IMF2DBuffer* locked2D;
 			IMFMediaBuffer* lockedBuffer;
+			double pixelAspectRatio;
+			int rotation;
+			LONGLONG skipUntil;
 			ID3D11Texture2D* staging[STAGING_TEXTURES];
 			LONGLONG stagingDurations[STAGING_TEXTURES];
 			bool stagingFailed;
@@ -268,13 +721,20 @@ namespace lime {
 			std::deque<int> stagingQueue;
 			LONGLONG stagingTimes[STAGING_TEXTURES];
 			UINT stagingWidth;
+			bool network;
+			std::condition_variable readCondition;
+			std::atomic<bool> seeking;
 			bool started;
+			std::mutex streamMutex;
 			std::wstring url;
+			bool videoAdvanced;
 			bool videoEnded;
 			ID3D11VideoContext* videoContext;
 			ID3D11VideoDevice* videoDevice;
 			LONGLONG videoPosition;
+			MFConnection videoConnection;
 			IMFSourceReader* videoReader;
+			bool videoStreamFound;
 
 
 	};
@@ -283,11 +743,15 @@ namespace lime {
 	MFVideoBackend::MFVideoBackend () {
 
 		audioChannels = 0;
+		audioPacketChannels = 0;
+		audioPacketRate = 0;
 		audioReader = NULL;
 		audioSampleRate = 0;
 		audioSourceChannels = 0;
+		audioStreamFound = false;
 		bufferHeight = 0;
 		bufferWidth = 0;
+		canSeek = true;
 		colorMatrix = VIDEO_COLOR_MATRIX_BT709;
 		cropHeight = 0;
 		cropWidth = 0;
@@ -300,15 +764,21 @@ namespace lime {
 		frameRate = 0;
 		fullRange = false;
 		hardwareActive = false;
+		interopContext = NULL;
 		interopDevice = NULL;
 		interopFailed = false;
+		interrupted = false;
+		lastFrameTime = -1;
 		locked2D = NULL;
 		lockedBuffer = NULL;
 		outputQuery = NULL;
+		pixelAspectRatio = 0;
 		processor = NULL;
 		processorEnumerator = NULL;
 		processorHeight = 0;
 		processorWidth = 0;
+		rotation = 0;
+		skipUntil = -1;
 		stagingFailed = false;
 		stagingHeight = 0;
 		stagingMapped = -1;
@@ -319,7 +789,12 @@ namespace lime {
 		videoDevice = NULL;
 		videoEnded = false;
 		videoPosition = 0;
+		frameTransfer = VIDEO_COLOR_TRANSFER_SDR;
+		network = false;
+		seeking = false;
+		videoAdvanced = false;
 		videoReader = NULL;
+		videoStreamFound = false;
 
 		for (int i = 0; i < STAGING_TEXTURES; i++) staging[i] = NULL;
 
@@ -327,14 +802,77 @@ namespace lime {
 
 			outputs[i].glTexture = 0;
 			outputs[i].interop = NULL;
+			outputs[i].locked = false;
 			outputs[i].texture = NULL;
 			outputs[i].view = NULL;
 			outputFrames[i].index = i;
 
 		}
 
-		InitializeCOM ();
+		UseMultithreadedApartment ();
 		started = SUCCEEDED (_MFStartup (MF_VERSION, MFSTARTUP_FULL));
+
+	}
+
+
+	#ifdef LIME_VIDEO_WGL_INTEROP
+	// Textures shared with OpenGL by a backend closed away from the GL thread.
+	// The device is kept so the interop objects can still be released.
+	struct MFOrphan {
+
+		void* context;
+		ID3D11Device* device;
+		HANDLE interopDevice;
+		std::vector<HANDLE> interops;
+		std::vector<unsigned int> glTextures;
+		std::vector<bool> locked;
+		std::vector<ID3D11Texture2D*> textures;
+
+	};
+
+	// Never destroyed, like the other video code's, as threads can still be
+	// closing videos while static destructors run
+	static std::mutex* orphanMutex = new std::mutex ();
+	static std::vector<MFOrphan>* orphans = new std::vector<MFOrphan> ();
+	#endif
+
+
+	void MFVideoBackend::ReleaseOrphans () {
+
+		#ifdef LIME_VIDEO_WGL_INTEROP
+		std::vector<MFOrphan> list;
+
+		{
+			std::lock_guard<std::mutex> lock (*orphanMutex);
+			if (orphans->empty ()) return;
+			list.swap (*orphans);
+		}
+
+		void* context = (void*)wglGetCurrentContext ();
+
+		for (size_t i = 0; i < list.size (); i++) {
+
+			MFOrphan& orphan = list[i];
+
+			// Objects from a context that is no longer current are left with it
+			bool current = orphan.interopDevice && orphan.context == context;
+
+			for (size_t j = 0; j < orphan.interops.size (); j++) {
+
+				// The frame shown when the backend closed is still locked, and is
+				// unlocked first, as closing on the GL thread does
+				if (current && orphan.interops[j] && orphan.locked[j]) _wglDXUnlockObjectsNV (orphan.interopDevice, 1, &orphan.interops[j]);
+				if (current && orphan.interops[j]) _wglDXUnregisterObjectNV (orphan.interopDevice, orphan.interops[j]);
+				if (current && orphan.glTextures[j]) glDeleteTextures (1, &orphan.glTextures[j]);
+				if (orphan.textures[j]) orphan.textures[j]->Release ();
+
+			}
+
+			if (current) _wglDXCloseDeviceNV (orphan.interopDevice);
+			if (orphan.device) orphan.device->Release ();
+
+		}
+		#endif
 
 	}
 
@@ -348,79 +886,38 @@ namespace lime {
 	}
 
 
-	#ifdef LIME_VIDEO_WGL_INTEROP
-	struct MFOrphan {
-
-		HANDLE interopDevice;
-		ID3D11Device* device;
-		std::vector<HANDLE> interops;
-		std::vector<GLuint> glTextures;
-		std::vector<ID3D11Texture2D*> textures;
-
-	};
-
-	static std::mutex orphanMutex;
-	static std::vector<MFOrphan> orphans;
-
-
-	static void ReleaseMFOrphans () {
-
-		std::vector<MFOrphan> list;
-
-		{
-			std::lock_guard<std::mutex> lock (orphanMutex);
-			list.swap (orphans);
-		}
-
-		for (size_t i = 0; i < list.size (); i++) {
-
-			MFOrphan& orphan = list[i];
-
-			for (size_t j = 0; j < orphan.interops.size (); j++) {
-
-				if (orphan.interopDevice && orphan.interops[j]) _wglDXUnregisterObjectNV (orphan.interopDevice, orphan.interops[j]);
-
-			}
-
-			if (!orphan.glTextures.empty ()) glDeleteTextures ((GLsizei)orphan.glTextures.size (), orphan.glTextures.data ());
-
-			for (size_t j = 0; j < orphan.textures.size (); j++) {
-
-				if (orphan.textures[j]) orphan.textures[j]->Release ();
-
-			}
-
-			if (orphan.interopDevice) _wglDXCloseDeviceNV (orphan.interopDevice);
-			if (orphan.device) orphan.device->Release ();
-
-		}
-
-	}
-	#endif
-
-
 	void MFVideoBackend::Close () {
 
+		// Closing away from the GL thread queues the textures it shares with
+		// OpenGL, rather than using them with the next device
 		#ifdef LIME_VIDEO_WGL_INTEROP
 		MFOrphan orphan;
-		orphan.interopDevice = interopDevice;
+		orphan.context = interopContext;
 		orphan.device = NULL;
+		orphan.interopDevice = interopDevice;
+		#endif
 
 		for (int i = 0; i < OUTPUT_TEXTURES; i++) {
 
 			if (outputs[i].interop) {
 
+				#ifdef LIME_VIDEO_WGL_INTEROP
 				orphan.interops.push_back (outputs[i].interop);
 				orphan.glTextures.push_back (outputs[i].glTexture);
+				orphan.locked.push_back (outputs[i].locked);
 				orphan.textures.push_back (outputs[i].texture);
+				#endif
+
 				outputs[i].glTexture = 0;
 				outputs[i].interop = NULL;
+				outputs[i].locked = false;
 				outputs[i].texture = NULL;
 
 			}
 
 		}
 
+		#ifdef LIME_VIDEO_WGL_INTEROP
 		if (orphan.interopDevice || !orphan.interops.empty ()) {
 
 			if (device) {
@@ -430,43 +927,53 @@ namespace lime {
 
 			}
 
-			std::lock_guard<std::mutex> lock (orphanMutex);
-			orphans.push_back (orphan);
-			VideoBackend::releaseOrphans = ReleaseMFOrphans;
+			std::lock_guard<std::mutex> lock (*orphanMutex);
+			orphans->push_back (orphan);
 
 		}
 		#endif
 
+		interopContext = NULL;
 		interopDevice = NULL;
 		interopFailed = false;
 
 		UnlockVideo ();
+		ReleaseReader (&videoReader, network);
+		ReleaseReader (&audioReader, network);
 
-		if (videoReader) {
-
-			videoReader->Release ();
-			videoReader = NULL;
-
-		}
-
-		if (audioReader) {
-
-			audioReader->Release ();
-			audioReader = NULL;
-
-		}
+		SetByteStream (&audioConnection, NULL);
+		SetByteStream (&videoConnection, NULL);
+		audioConnection.cancelled = false;
+		audioConnection.reopen = false;
+		videoConnection.cancelled = false;
+		videoConnection.reopen = false;
+		frameTransfer = VIDEO_COLOR_TRANSFER_SDR;
+		interrupted = false;
+		network = false;
+		seeking = false;
 
 		ReleaseDeviceManager ();
 
 		audioChannels = 0;
+		audioConverter.Reset ();
+		audioPacketChannels = 0;
+		audioPacketRate = 0;
 		audioSampleRate = 0;
 		audioSourceChannels = 0;
+		audioStreamFound = false;
+		canSeek = true;
+		frameRate = 0;
 		hardwareActive = false;
+		lastFrameTime = -1;
+		pixelAspectRatio = 0;
+		rotation = 0;
+		skipUntil = -1;
 		stagingFailed = false;
 		stagingPrimed = false;
 		texturesFailed = false;
 		videoEnded = false;
 		videoPosition = 0;
+		videoStreamFound = false;
 
 	}
 
@@ -580,51 +1087,140 @@ namespace lime {
 	}
 
 
+	IMFSourceReader* MFVideoBackend::CreateReader (IMFAttributes* attributes, MFConnection* connection) {
+
+		// Each reader reads its own byte stream, which is kept so Interrupt and
+		// PrepareSeek can close it. The resolver opens files and URLs as Media
+		// Foundation does.
+		IMFByteStream* byteStream = NULL;
+		IMFSourceResolver* resolver = NULL;
+
+		if (_MFCreateSourceResolver && _MFCreateSourceReaderFromByteStream && SUCCEEDED (_MFCreateSourceResolver (&resolver))) {
+
+			IUnknown* object = ResolveURL (resolver, connection);
+
+			if (object) {
+
+				object->QueryInterface (IID_PPV_ARGS (&byteStream));
+				object->Release ();
+
+			}
+
+			resolver->Release ();
+
+		}
+
+		IMFSourceReader* reader = NULL;
+
+		if (byteStream) {
+
+			// The byte stream is kept first, so a source that stalls while the
+			// reader opens can be given up too
+			SetByteStream (connection, byteStream);
+
+			if (FAILED (_MFCreateSourceReaderFromByteStream (byteStream, attributes, &reader))) {
+
+				reader = NULL;
+				SetByteStream (connection, NULL);
+
+			}
+
+		}
+
+		if (!reader && (connection->cancelled || FAILED (_MFCreateSourceReaderFromURL (url.c_str (), attributes, &reader)))) {
+
+			return NULL;
+
+		}
+
+		return reader;
+
+	}
+
+
+	static bool GetSharedDevice (ID3D11Device** device, IMFDXGIDeviceManager** deviceManager) {
+
+		// One device serves every video for the life of the process. Creating one
+		// for each video takes tens of milliseconds, and releasing one ends the
+		// driver's threads, which Neko's collector, as it tracks every thread in
+		// the process, can abort on when it happens during a collection.
+		static std::mutex mutex;
+		static ID3D11Device* sharedDevice = NULL;
+		static IMFDXGIDeviceManager* sharedManager = NULL;
+
+		std::lock_guard<std::mutex> lock (mutex);
+
+		if (sharedDevice && sharedDevice->GetDeviceRemovedReason () != S_OK) {
+
+			// A device lost to a driver reset or update is replaced. Videos using
+			// it keep their references until they close.
+			sharedManager->Release ();
+			sharedDevice->Release ();
+			sharedManager = NULL;
+			sharedDevice = NULL;
+
+		}
+
+		if (!sharedDevice) {
+
+			if (!_D3D11CreateDevice || !_MFCreateDXGIDeviceManager) return false;
+
+			static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3 };
+
+			UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+			ID3D11Device* created = NULL;
+			HRESULT hr = _D3D11CreateDevice (NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags, levels, ARRAYSIZE (levels), D3D11_SDK_VERSION, &created, NULL, NULL);
+
+			if (hr == E_INVALIDARG) {
+
+				// Windows 7 without the platform update does not know 11.1
+				hr = _D3D11CreateDevice (NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags, levels + 1, ARRAYSIZE (levels) - 1, D3D11_SDK_VERSION, &created, NULL, NULL);
+
+			}
+
+			if (FAILED (hr) || !created) return false;
+
+			// Media Foundation and every video use the device from their own threads
+			ID3D10Multithread* multithread = NULL;
+
+			if (SUCCEEDED (created->QueryInterface (IID_PPV_ARGS (&multithread)))) {
+
+				multithread->SetMultithreadProtected (TRUE);
+				multithread->Release ();
+
+			}
+
+			UINT token = 0;
+			IMFDXGIDeviceManager* manager = NULL;
+
+			if (FAILED (_MFCreateDXGIDeviceManager (&token, &manager)) || FAILED (manager->ResetDevice (created, token))) {
+
+				if (manager) manager->Release ();
+				created->Release ();
+				return false;
+
+			}
+
+			sharedDevice = created;
+			sharedManager = manager;
+
+		}
+
+		sharedDevice->AddRef ();
+		sharedManager->AddRef ();
+		*device = sharedDevice;
+		*deviceManager = sharedManager;
+		return true;
+
+	}
+
+
 	bool MFVideoBackend::CreateDeviceManager () {
 
 		if (deviceManager) return true;
-		if (!_D3D11CreateDevice || !_MFCreateDXGIDeviceManager) return false;
-
-		static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3 };
-
-		UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-		HRESULT hr = _D3D11CreateDevice (NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags, levels, ARRAYSIZE (levels), D3D11_SDK_VERSION, &device, NULL, NULL);
-
-		if (hr == E_INVALIDARG) {
-
-			// Windows 7 without the platform update does not know 11.1
-			hr = _D3D11CreateDevice (NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags, levels + 1, ARRAYSIZE (levels) - 1, D3D11_SDK_VERSION, &device, NULL, NULL);
-
-		}
-
-		if (FAILED (hr) || !device) {
-
-			device = NULL;
-			return false;
-
-		}
+		if (!GetSharedDevice (&device, &deviceManager)) return false;
 
 		device->GetImmediateContext (&context);
-
-		// Media Foundation uses the device from its own threads
-		ID3D10Multithread* multithread = NULL;
-
-		if (SUCCEEDED (device->QueryInterface (IID_PPV_ARGS (&multithread)))) {
-
-			multithread->SetMultithreadProtected (TRUE);
-			multithread->Release ();
-
-		}
-
-		UINT token = 0;
-
-		if (FAILED (_MFCreateDXGIDeviceManager (&token, &deviceManager)) || FAILED (deviceManager->ResetDevice (device, token))) {
-
-			ReleaseDeviceManager ();
-			return false;
-
-		}
-
 		return true;
 
 	}
@@ -632,9 +1228,16 @@ namespace lime {
 
 	VideoDecodeResult MFVideoBackend::DecodeAudio (std::vector<unsigned char>* pcm, double* time) {
 
-		if (!audioReader) return VIDEO_DECODE_END;
-
 		InitializeCOM ();
+
+		if (audioConnection.reopen) {
+
+			VideoDecodeResult result = ReopenAudio ();
+			if (result != VIDEO_DECODE_OK) return result;
+
+		}
+
+		if (!audioReader) return VIDEO_DECODE_END;
 
 		while (true) {
 
@@ -642,12 +1245,15 @@ namespace lime {
 			LONGLONG timestamp = 0;
 			IMFSample* sample = NULL;
 
-			HRESULT hr = audioReader->ReadSample (MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, NULL, &flags, &timestamp, &sample);
+			HRESULT hr = ReadSample (audioReader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, &audioConnection, &flags, &timestamp, &sample);
 
 			if (FAILED (hr) || (flags & MF_SOURCE_READERF_ERROR)) {
 
 				if (sample) sample->Release ();
-				return VIDEO_DECODE_ERROR;
+
+				// A seek gave up on this read, or it waits for one, and reading
+				// carries on after it
+				return audioConnection.reopen || seeking ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
 
 			}
 
@@ -657,6 +1263,10 @@ namespace lime {
 				return VIDEO_DECODE_END;
 
 			}
+
+			// A stream can change its rate or channels partway, such as HE-AAC
+			// that only shows its full rate once decoding starts
+			if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) ReadAudioFormat ();
 
 			if (!sample) continue;
 
@@ -678,13 +1288,14 @@ namespace lime {
 
 			*time = timestamp / 10000000.0;
 
-			if (audioSourceChannels == audioChannels) {
+			// Audio is given in the format it opened with
+			if (audioPacketChannels == audioChannels && audioPacketRate == audioSampleRate) {
 
 				pcm->insert (pcm->end (), data, data + length);
 
-			} else {
+			} else if (audioPacketChannels > 0 && audioPacketRate > 0) {
 
-				DownmixToStereo ((const short*)data, length / (audioSourceChannels * 2), audioSourceChannels, pcm);
+				ConvertAudio ((const short*)data, length / (audioPacketChannels * 2), audioPacketChannels, audioPacketRate, audioChannels, audioSampleRate, &audioConverter, pcm);
 
 			}
 
@@ -701,10 +1312,16 @@ namespace lime {
 	VideoDecodeResult MFVideoBackend::DecodeVideo (VideoPlanes* planes, double* time, double* duration) {
 
 		UnlockVideo ();
+		InitializeCOM ();
+
+		if (videoConnection.reopen) {
+
+			VideoDecodeResult result = ReopenVideo ();
+			if (result != VIDEO_DECODE_OK) return result;
+
+		}
 
 		if (!videoReader) return VIDEO_DECODE_END;
-
-		InitializeCOM ();
 
 		while (true) {
 
@@ -713,7 +1330,13 @@ namespace lime {
 			if (!stagingQueue.empty () && (stagingQueue.size () >= (size_t)STAGING_DELAY || videoEnded || !stagingPrimed)) {
 
 				stagingPrimed = true;
-				return MapStaging (planes, time, duration);
+				VideoDecodeResult result = MapStaging (planes, time, duration);
+
+				// A GPU that is lost, as when its driver restarts, cannot give back
+				// the frames it decoded, so decoding carries on in software
+				if (result == VIDEO_DECODE_ERROR && hardwareActive && !interrupted && SwitchToSoftware ()) continue;
+
+				return result;
 
 			}
 
@@ -723,15 +1346,19 @@ namespace lime {
 			LONGLONG timestamp = 0;
 			IMFSample* sample = NULL;
 
-			HRESULT hr = videoReader->ReadSample (MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, NULL, &flags, &timestamp, &sample);
+			HRESULT hr = ReadSample (videoReader, MF_SOURCE_READER_FIRST_VIDEO_STREAM, &videoConnection, &flags, &timestamp, &sample);
 
 			if (FAILED (hr) || (flags & MF_SOURCE_READERF_ERROR)) {
 
 				if (sample) sample->Release ();
 
-				if (hardwareActive && SwitchToSoftware ()) continue;
+				// A seek gave up on this read, or it waits for one, and reading
+				// carries on after it
+				if (videoConnection.reopen || seeking) return VIDEO_DECODE_AGAIN;
 
-				return VIDEO_DECODE_ERROR;
+				if (hardwareActive && !interrupted && SwitchToSoftware ()) continue;
+
+				return videoConnection.reopen || seeking ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
 
 			}
 
@@ -746,6 +1373,21 @@ namespace lime {
 			}
 
 			if (!sample) continue;
+
+			// After switching to software, decoding restarts from a keyframe, and
+			// the frames that were already returned are skipped
+			if (skipUntil >= 0) {
+
+				if (timestamp <= skipUntil) {
+
+					sample->Release ();
+					continue;
+
+				}
+
+				skipUntil = -1;
+
+			}
 
 			LONGLONG sampleDuration = 0;
 			sample->GetSampleDuration (&sampleDuration);
@@ -852,6 +1494,7 @@ namespace lime {
 
 			GetPlanes (planes, data, pitch, lumaRows);
 
+			lastFrameTime = timestamp;
 			videoPosition = timestamp;
 			*time = timestamp / 10000000.0;
 			*duration = sampleDuration > 0 ? sampleDuration / 10000000.0 : (frameRate > 0 ? 1.0 / frameRate : 0);
@@ -863,10 +1506,35 @@ namespace lime {
 	}
 
 
+	void MFVideoBackend::GiveUp (MFConnection* connection) {
+
+		// Closing the byte stream makes a read waiting on a stalled network
+		// source fail, and connecting is cancelled
+		connection->cancelled = true;
+		if (connection->byteStream) connection->byteStream->Close ();
+		if (connection->resolver && connection->cancelCookie) connection->resolver->CancelObjectCreation (connection->cancelCookie);
+
+	}
+
+
+	void MFVideoBackend::Interrupt () {
+
+		// A stream waiting on a stalled network source would wait until the
+		// connection times out, half a minute later
+		interrupted = true;
+
+		std::lock_guard<std::mutex> lock (streamMutex);
+		GiveUp (&audioConnection);
+		GiveUp (&videoConnection);
+
+	}
+
+
 	void MFVideoBackend::GetPlanes (VideoPlanes* planes, BYTE* data, int pitch, int lumaRows) {
 
 		planes->colorMatrix = colorMatrix;
 		planes->fullRange = fullRange;
+		planes->transfer = frameTransfer;
 		planes->width = cropWidth;
 		planes->height = cropHeight;
 		planes->y = data + cropY * pitch + cropX;
@@ -892,6 +1560,7 @@ namespace lime {
 		// The chroma plane of a mapped NV12 texture follows its luma rows
 		GetPlanes (planes, (BYTE*)mapped.pData, (int)mapped.RowPitch, (int)stagingHeight);
 
+		lastFrameTime = stagingTimes[index];
 		videoPosition = stagingTimes[index];
 		*time = stagingTimes[index] / 10000000.0;
 		*duration = stagingDurations[index] > 0 ? stagingDurations[index] / 10000000.0 : (frameRate > 0 ? 1.0 / frameRate : 0);
@@ -907,13 +1576,20 @@ namespace lime {
 
 		if (!started || !path || !path[0]) return false;
 
-		InitializeCOM ();
+		UseMultithreadedApartment ();
 
 		url = GetURL (path);
 		if (url.empty ()) return false;
 
+		network = url.find (L"://") != std::wstring::npos && url.compare (0, 5, L"file:") != 0;
+
 		info->hasVideo = OpenVideo (hardwareDecoding) || (hardwareDecoding && OpenVideo (false));
 		info->hasAudio = OpenAudio ();
+
+		// A stream that was found but cannot be decoded, such as one in a codec
+		// that is not installed
+		info->videoUnsupported = !info->hasVideo && videoStreamFound;
+		info->audioUnsupported = !info->hasAudio && audioStreamFound;
 
 		if (!info->hasVideo && !info->hasAudio) return false;
 
@@ -929,9 +1605,22 @@ namespace lime {
 
 		PropVariantClear (&duration);
 
+		PROPVARIANT characteristics;
+		PropVariantInit (&characteristics);
+
+		if (SUCCEEDED (reader->GetPresentationAttribute (MF_SOURCE_READER_MEDIASOURCE, MF_SOURCE_READER_MEDIASOURCE_CHARACTERISTICS, &characteristics)) && characteristics.vt == VT_UI4) {
+
+			canSeek = (characteristics.ulVal & MFMEDIASOURCE_CAN_SEEK) != 0;
+
+		}
+
+		PropVariantClear (&characteristics);
+
 		info->audioChannels = audioChannels;
 		info->audioSampleRate = audioSampleRate;
 		info->frameRate = frameRate;
+		info->pixelAspectRatio = info->hasVideo ? pixelAspectRatio : 0;
+		info->rotation = info->hasVideo ? rotation : 0;
 		info->width = info->hasVideo ? cropWidth : 0;
 		info->height = info->hasVideo ? cropHeight : 0;
 
@@ -944,7 +1633,8 @@ namespace lime {
 
 		IMFSourceReader* reader = NULL;
 
-		if (FAILED (_MFCreateSourceReaderFromURL (url.c_str (), NULL, &reader))) return false;
+		reader = CreateReader (NULL, &audioConnection);
+		if (!reader) return false;
 
 		reader->SetStreamSelection (MF_SOURCE_READER_ALL_STREAMS, FALSE);
 
@@ -957,6 +1647,7 @@ namespace lime {
 
 		}
 
+		audioStreamFound = true;
 		UINT32 sourceChannels = MFGetAttributeUINT32 (nativeType, MF_MT_AUDIO_NUM_CHANNELS, 0);
 		nativeType->Release ();
 
@@ -1006,13 +1697,46 @@ namespace lime {
 		audioSampleRate = (int)sampleRate;
 		audioSourceChannels = (int)channels;
 		audioChannels = channels > 2 ? 2 : (int)channels;
+		audioConverter.Reset ();
+		audioPacketChannels = audioSourceChannels;
+		audioPacketRate = audioSampleRate;
 
 		return true;
 
 	}
 
 
+	void MFVideoBackend::ReadAudioFormat () {
+
+		IMFMediaType* type = NULL;
+		if (FAILED (audioReader->GetCurrentMediaType (MF_SOURCE_READER_FIRST_AUDIO_STREAM, &type))) return;
+
+		UINT32 bits = MFGetAttributeUINT32 (type, MF_MT_AUDIO_BITS_PER_SAMPLE, 0);
+		UINT32 channels = MFGetAttributeUINT32 (type, MF_MT_AUDIO_NUM_CHANNELS, 0);
+		UINT32 sampleRate = MFGetAttributeUINT32 (type, MF_MT_AUDIO_SAMPLES_PER_SECOND, 0);
+		type->Release ();
+
+		// A format that cannot be read is dropped, rather than played as noise
+		bool readable = (bits == 16 && channels > 0 && channels <= 8 && sampleRate > 0);
+		audioPacketChannels = readable ? (int)channels : 0;
+		audioPacketRate = readable ? (int)sampleRate : 0;
+
+	}
+
+
 	bool MFVideoBackend::OpenVideo (bool hardware) {
+
+		if (hardware) return OpenVideoReader (true, true);
+
+		// Software decoding converts frames with the basic video processing, or
+		// the advanced processing of Windows 8 and later for what that cannot,
+		// such as 10-bit video
+		return OpenVideoReader (false, false) || OpenVideoReader (false, true);
+
+	}
+
+
+	bool MFVideoBackend::OpenVideoReader (bool hardware, bool advanced, bool keepDevice) {
 
 		IMFAttributes* attributes = NULL;
 		if (FAILED (_MFCreateAttributes (&attributes, 4))) return false;
@@ -1026,44 +1750,96 @@ namespace lime {
 		} else {
 
 			hardware = false;
-			attributes->SetUINT32 (MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+			attributes->SetUINT32 (advanced ? MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING : MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
 
 		}
 
-		IMFSourceReader* reader = NULL;
-		HRESULT hr = _MFCreateSourceReaderFromURL (url.c_str (), attributes, &reader);
+		IMFSourceReader* reader = CreateReader (attributes, &videoConnection);
 		attributes->Release ();
 
-		if (FAILED (hr)) {
+		if (!reader) {
 
-			if (hardware) ReleaseDeviceManager ();
+			if (hardware && !keepDevice) ReleaseDeviceManager ();
 			return false;
 
 		}
 
 		reader->SetStreamSelection (MF_SOURCE_READER_ALL_STREAMS, FALSE);
 
-		IMFMediaType* type = NULL;
-		bool configured = SUCCEEDED (reader->SetStreamSelection (MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE)) && SUCCEEDED (_MFCreateMediaType (&type));
+		bool configured = false;
 
-		if (configured) {
+		if (SUCCEEDED (reader->SetStreamSelection (MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE))) {
 
-			type->SetGUID (MF_MT_MAJOR_TYPE, MFMediaType_Video);
-			type->SetGUID (MF_MT_SUBTYPE, MFVideoFormat_NV12);
-			configured = SUCCEEDED (reader->SetCurrentMediaType (MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, type));
-			type->Release ();
+			videoStreamFound = true;
+
+			// The advanced video processing turns and stretches frames to show
+			// them upright with square pixels, which other platforms leave to the
+			// application, so frames are asked for with the stream's own rotation
+			// and pixel shape to keep them as they are stored
+			UINT32 streamRotation = 0;
+			UINT64 streamPixelShape = 0;
+			VideoColorTransfer streamTransfer = VIDEO_COLOR_TRANSFER_SDR;
+			IMFMediaType* nativeType = NULL;
+
+			if (SUCCEEDED (reader->GetNativeMediaType (MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &nativeType))) {
+
+				streamRotation = MFGetAttributeUINT32 (nativeType, MF_MT_VIDEO_ROTATION, 0);
+				nativeType->GetUINT64 (MF_MT_PIXEL_ASPECT_RATIO, &streamPixelShape);
+				streamTransfer = ReadTransfer (nativeType);
+				nativeType->Release ();
+
+			}
+
+			// HDR is shown in standard range. The hardware video processing tone
+			// maps PQ well, and is asked to. HLG, which it leaves far too bright,
+			// and HDR decoded in software, which is not tone mapped, are asked for
+			// as they are, and VideoDecoder tone maps them.
+			bool hdr = streamTransfer != VIDEO_COLOR_TRANSFER_SDR;
+			bool convertHDR = hardware && streamTransfer == VIDEO_COLOR_TRANSFER_PQ;
+
+			// Frames are asked for progressive, so the video processing
+			// deinterlaces interlaced video, unless it cannot
+			for (int attempt = 0; attempt < (hdr ? 4 : 2) && !configured; attempt++) {
+
+				IMFMediaType* type = NULL;
+				if (FAILED (_MFCreateMediaType (&type))) break;
+
+				bool describeHDR = hdr && attempt < 2;
+
+				type->SetGUID (MF_MT_MAJOR_TYPE, MFMediaType_Video);
+				type->SetGUID (MF_MT_SUBTYPE, MFVideoFormat_NV12);
+				type->SetUINT32 (MF_MT_VIDEO_ROTATION, streamRotation);
+				if (streamPixelShape) type->SetUINT64 (MF_MT_PIXEL_ASPECT_RATIO, streamPixelShape);
+				if (attempt % 2 == 0) type->SetUINT32 (MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+
+				if (describeHDR) {
+
+					type->SetUINT32 (MF_MT_TRANSFER_FUNCTION, convertHDR ? MFVideoTransFunc_709 : (streamTransfer == VIDEO_COLOR_TRANSFER_PQ ? TRANSFER_PQ : TRANSFER_HLG));
+					type->SetUINT32 (MF_MT_VIDEO_PRIMARIES, convertHDR ? MFVideoPrimaries_BT709 : PRIMARIES_BT2020);
+					type->SetUINT32 (MF_MT_YUV_MATRIX, convertHDR ? MFVideoTransferMatrix_BT709 : MATRIX_BT2020);
+
+				}
+
+				configured = SUCCEEDED (reader->SetCurrentMediaType (MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, type));
+				type->Release ();
+
+				// Without asking, hardware video processing converts HDR itself
+				if (configured) frameTransfer = (describeHDR ? convertHDR : hardware) ? VIDEO_COLOR_TRANSFER_SDR : streamTransfer;
+
+			}
 
 		}
 
 		if (!configured) {
 
 			reader->Release ();
-			if (hardware) ReleaseDeviceManager ();
+			if (hardware && !keepDevice) ReleaseDeviceManager ();
 			return false;
 
 		}
 
 		videoReader = reader;
+		videoAdvanced = advanced;
 		hardwareActive = hardware;
 		ReadVideoFormat ();
 
@@ -1071,12 +1847,191 @@ namespace lime {
 
 			videoReader->Release ();
 			videoReader = NULL;
-			if (hardware) ReleaseDeviceManager ();
+			if (hardware && !keepDevice) ReleaseDeviceManager ();
 			return false;
 
 		}
 
 		return true;
+
+	}
+
+
+	void MFVideoBackend::PrepareSeek () {
+
+		// A stream waiting on a stalled network source would hold up the seek
+		// until the connection times out, half a minute later. Reads from a
+		// source that is still sending finish soon, and those that have not by
+		// then are given up. Their readers open again once the seek is done.
+		if (!network || !canSeek) return;
+
+		std::unique_lock<std::mutex> lock (streamMutex);
+		seeking = true;
+		readCondition.wait_for (lock, std::chrono::milliseconds (SEEK_WAIT_MS), [this] { return !audioConnection.busy && !videoConnection.busy; });
+
+		if (audioConnection.busy) {
+
+			audioConnection.reopen = true;
+			GiveUp (&audioConnection);
+
+		}
+
+		if (videoConnection.busy) {
+
+			videoConnection.reopen = true;
+			GiveUp (&videoConnection);
+
+		}
+
+	}
+
+
+	HRESULT MFVideoBackend::ReadSample (IMFSourceReader* reader, DWORD stream, MFConnection* connection, DWORD* flags, LONGLONG* timestamp, IMFSample** sample) {
+
+		if (!SetBusy (connection, true)) return E_ABORT;
+		HRESULT hr = reader->ReadSample (stream, 0, NULL, flags, timestamp, sample);
+		SetBusy (connection, false);
+		return hr;
+
+	}
+
+
+	VideoDecodeResult MFVideoBackend::ReopenAudio () {
+
+		// A seek gave up on a read that waited on a stalled network source, so
+		// the reader opens again, at the time seeked to, and plays on in the
+		// format it opened with
+		audioConnection.reopen = false;
+
+		if (!SetBusy (&audioConnection, true)) {
+
+			audioConnection.reopen = true;
+			return VIDEO_DECODE_AGAIN;
+
+		}
+
+		ReleaseReader (&audioReader, true);
+		SetByteStream (&audioConnection, NULL);
+
+		int channels = audioChannels;
+		int sampleRate = audioSampleRate;
+		bool opened = OpenAudio ();
+		SetBusy (&audioConnection, false);
+
+		if (!opened || audioConnection.reopen) {
+
+			// One that cannot open is tried again at the next seek
+			bool again = audioConnection.reopen;
+			audioConnection.reopen = true;
+
+			if (audioReader) {
+
+				audioReader->Release ();
+				audioReader = NULL;
+
+			}
+
+			return again ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
+
+		}
+
+		audioChannels = channels;
+		audioSampleRate = sampleRate;
+
+		PROPVARIANT position;
+		PropVariantInit (&position);
+		position.vt = VT_I8;
+		position.hVal.QuadPart = audioConnection.reopenPosition;
+		audioReader->SetCurrentPosition (TIME_FORMAT_100NS, position);
+
+		return VIDEO_DECODE_OK;
+
+	}
+
+
+	VideoDecodeResult MFVideoBackend::ReopenVideo () {
+
+		// A seek gave up on a read that waited on a stalled network source, so
+		// the reader opens again as it was, at the time seeked to. The device
+		// stays, as OpenGL can still be showing frames from its textures.
+		videoConnection.reopen = false;
+
+		if (!SetBusy (&videoConnection, true)) {
+
+			videoConnection.reopen = true;
+			return VIDEO_DECODE_AGAIN;
+
+		}
+
+		ReleaseProcessor ();
+		ReleaseReader (&videoReader, true);
+		SetByteStream (&videoConnection, NULL);
+		bool opened = OpenVideoReader (hardwareActive, videoAdvanced, true);
+		SetBusy (&videoConnection, false);
+
+		if (!opened || videoConnection.reopen) {
+
+			// One that cannot open is tried again at the next seek
+			bool again = videoConnection.reopen;
+			videoConnection.reopen = true;
+
+			if (videoReader) {
+
+				videoReader->Release ();
+				videoReader = NULL;
+
+			}
+
+			return again ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
+
+		}
+
+		PROPVARIANT position;
+		PropVariantInit (&position);
+		position.vt = VT_I8;
+		position.hVal.QuadPart = videoConnection.reopenPosition;
+		videoReader->SetCurrentPosition (TIME_FORMAT_100NS, position);
+
+		return VIDEO_DECODE_OK;
+
+	}
+
+
+	IUnknown* MFVideoBackend::ResolveURL (IMFSourceResolver* resolver, MFConnection* connection) {
+
+		// Connecting waits for the server, which Interrupt and PrepareSeek can
+		// cancel, so it is made asynchronously. The wait ends when it is
+		// cancelled, whether or not Media Foundation calls back.
+		MFResolveCallback* callback = new MFResolveCallback (resolver);
+		IUnknown* cookie = NULL;
+		IUnknown* object = NULL;
+
+		if (callback->done && SUCCEEDED (resolver->BeginCreateObjectFromURL (url.c_str (), MF_RESOLUTION_BYTESTREAM, NULL, &cookie, callback, NULL))) {
+
+			{
+				std::lock_guard<std::mutex> lock (streamMutex);
+				connection->cancelCookie = cookie;
+				connection->resolver = resolver;
+				if (connection->cancelled && cookie) resolver->CancelObjectCreation (cookie);
+			}
+
+			DWORD wait = WAIT_TIMEOUT;
+
+			while (!connection->cancelled && (wait = WaitForSingleObject (callback->done, 50)) == WAIT_TIMEOUT) {}
+
+			{
+				std::lock_guard<std::mutex> lock (streamMutex);
+				connection->cancelCookie = NULL;
+				connection->resolver = NULL;
+			}
+
+			if (cookie) cookie->Release ();
+			if (wait == WAIT_OBJECT_0) object = callback->TakeObject ();
+
+		}
+
+		callback->Release ();
+		return object;
 
 	}
 
@@ -1137,6 +2092,42 @@ namespace lime {
 
 		UINT32 range = MFGetAttributeUINT32 (type, MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_Unknown);
 		if (range == MFNominalRange_Unknown && nativeType) range = MFGetAttributeUINT32 (nativeType, MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_Unknown);
+
+		// Media Foundation gives the rotation that was applied to the picture,
+		// counterclockwise, which is undone by turning it as far clockwise. The
+		// basic video processing keeps frames as they are stored, and says so.
+		// The advanced video processing turns and stretches them to show them
+		// upright with square pixels, whatever is asked for, and leaves the
+		// rotation out, so only what it leaves undone is reported.
+		IMFMediaType* streamType = nativeType ? nativeType : type;
+		int streamRotation = (int)MFGetAttributeUINT32 (streamType, MF_MT_VIDEO_ROTATION, 0);
+		UINT32 streamWidth = 0;
+		UINT32 streamHeight = 0;
+		MFGetAttributeSize (streamType, MF_MT_FRAME_SIZE, &streamWidth, &streamHeight);
+
+		UINT32 frameRotation = 0;
+		bool quarterTurn = (streamRotation == 90 || streamRotation == 270);
+		bool sidesSwapped = cropWidth != cropHeight && abs (cropWidth - (int)streamHeight) <= 16 && abs (cropHeight - (int)streamWidth) <= 16;
+
+		if (SUCCEEDED (type->GetUINT32 (MF_MT_VIDEO_ROTATION, &frameRotation))) {
+
+			rotation = (int)frameRotation;
+
+		} else {
+
+			rotation = quarterTurn && !sidesSwapped ? streamRotation : 0;
+
+		}
+
+		// Frames stretched to square pixels no longer match the stream's size
+		bool turned = quarterTurn && rotation == 0;
+		int storedWidth = turned ? cropHeight : cropWidth;
+		int storedHeight = turned ? cropWidth : cropHeight;
+		bool stretched = streamWidth > 0 && streamHeight > 0 && (abs (storedWidth - (int)streamWidth) > 2 || abs (storedHeight - (int)streamHeight) > 16);
+
+		UINT32 pixelWidth = 0;
+		UINT32 pixelHeight = 0;
+		pixelAspectRatio = !stretched && SUCCEEDED (MFGetAttributeRatio (streamType, MF_MT_PIXEL_ASPECT_RATIO, &pixelWidth, &pixelHeight)) && pixelWidth > 0 && pixelHeight > 0 ? (double)pixelWidth / pixelHeight : 0;
 
 		if (nativeType) nativeType->Release ();
 		type->Release ();
@@ -1227,7 +2218,14 @@ namespace lime {
 
 	bool MFVideoBackend::Seek (double time) {
 
+		seeking = false;
+
+		// A source that cannot seek, such as a live stream, is left playing
+		if (!canSeek) return false;
+
 		UnlockVideo ();
+		lastFrameTime = -1;
+		skipUntil = -1;
 		stagingPrimed = false;
 		stagingQueue.clear ();
 		videoEnded = false;
@@ -1239,15 +2237,30 @@ namespace lime {
 
 		bool success = true;
 
-		if (videoReader) {
+		// A reader that a seek gave up on opens again from the new position
+		if (videoConnection.reopen) {
+
+			videoConnection.reopenPosition = position.hVal.QuadPart;
+			videoPosition = position.hVal.QuadPart;
+
+		} else if (videoReader) {
 
 			success = SUCCEEDED (videoReader->SetCurrentPosition (TIME_FORMAT_100NS, position)) && success;
 			videoPosition = position.hVal.QuadPart;
 
 		}
 
-		if (audioReader) success = SUCCEEDED (audioReader->SetCurrentPosition (TIME_FORMAT_100NS, position)) && success;
+		if (audioConnection.reopen) {
 
+			audioConnection.reopenPosition = position.hVal.QuadPart;
+
+		} else if (audioReader) {
+
+			success = SUCCEEDED (audioReader->SetCurrentPosition (TIME_FORMAT_100NS, position)) && success;
+
+		}
+
+		audioConverter.Reset ();
 		return success;
 
 	}
@@ -1365,10 +2378,16 @@ namespace lime {
 
 		*frame = NULL;
 		UnlockVideo ();
+		InitializeCOM ();
+
+		if (videoConnection.reopen) {
+
+			VideoDecodeResult result = ReopenVideo ();
+			if (result != VIDEO_DECODE_OK) return result;
+
+		}
 
 		if (!videoReader) return VIDEO_DECODE_END;
-
-		InitializeCOM ();
 
 		while (true) {
 
@@ -1376,16 +2395,20 @@ namespace lime {
 			LONGLONG timestamp = 0;
 			IMFSample* sample = NULL;
 
-			HRESULT hr = videoReader->ReadSample (MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, NULL, &flags, &timestamp, &sample);
+			HRESULT hr = ReadSample (videoReader, MF_SOURCE_READER_FIRST_VIDEO_STREAM, &videoConnection, &flags, &timestamp, &sample);
 
 			if (FAILED (hr) || (flags & MF_SOURCE_READERF_ERROR)) {
 
 				if (sample) sample->Release ();
 
-				// Continuing in software means decoding into memory from here on
-				if (hardwareActive && SwitchToSoftware ()) return VIDEO_DECODE_OK;
+				// A seek gave up on this read, or it waits for one, and reading
+				// carries on after it
+				if (videoConnection.reopen || seeking) return VIDEO_DECODE_AGAIN;
 
-				return VIDEO_DECODE_ERROR;
+				// Continuing in software means decoding into memory from here on
+				if (hardwareActive && !interrupted && SwitchToSoftware ()) return VIDEO_DECODE_OK;
+
+				return videoConnection.reopen || seeking ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
 
 			}
 
@@ -1522,6 +2545,7 @@ namespace lime {
 			outputFrames[index].height = cropHeight;
 			*frame = &outputFrames[index];
 
+			lastFrameTime = timestamp;
 			videoPosition = timestamp;
 			*time = timestamp / 10000000.0;
 			*duration = sampleDuration > 0 ? sampleDuration / 10000000.0 : (frameRate > 0 ? 1.0 / frameRate : 0);
@@ -1537,10 +2561,29 @@ namespace lime {
 
 		#ifdef LIME_VIDEO_WGL_INTEROP
 		MFOutputTexture& output = outputs[((MFTextureFrame*)frame)->index];
+		HGLRC glContext = wglGetCurrentContext ();
+
+		if (interopDevice && glContext != interopContext) {
+
+			// Another context is current, such as another window's, where the
+			// textures shared with the first one do not exist, so they are shared
+			// again and the first context keeps its own until it is deleted
+			for (int i = 0; i < OUTPUT_TEXTURES; i++) {
+
+				outputs[i].glTexture = 0;
+				outputs[i].interop = NULL;
+				outputs[i].locked = false;
+
+			}
+
+			interopDevice = NULL;
+			interopFailed = false;
+
+		}
 
 		if (!interopDevice) {
 
-			if (interopFailed || !wglGetCurrentContext ()) return 0;
+			if (interopFailed || !glContext) return 0;
 
 			_wglDXOpenDeviceNV = (WGLDXOpenDeviceFunc)wglGetProcAddress ("wglDXOpenDeviceNV");
 			_wglDXCloseDeviceNV = (WGLDXCloseDeviceFunc)wglGetProcAddress ("wglDXCloseDeviceNV");
@@ -1552,6 +2595,7 @@ namespace lime {
 			if (_wglDXOpenDeviceNV && _wglDXCloseDeviceNV && _wglDXRegisterObjectNV && _wglDXUnregisterObjectNV && _wglDXLockObjectsNV && _wglDXUnlockObjectsNV) {
 
 				interopDevice = _wglDXOpenDeviceNV (device);
+				interopContext = glContext;
 
 			}
 
@@ -1579,6 +2623,7 @@ namespace lime {
 			}
 
 			if (!_wglDXLockObjectsNV (interopDevice, 1, &output.interop)) return 0;
+			output.locked = true;
 
 			// Without mipmaps, the default minification filter would leave the
 			// texture incomplete
@@ -1595,7 +2640,9 @@ namespace lime {
 
 		}
 
-		return _wglDXLockObjectsNV (interopDevice, 1, &output.interop) ? output.glTexture : 0;
+		if (!_wglDXLockObjectsNV (interopDevice, 1, &output.interop)) return 0;
+		output.locked = true;
+		return output.glTexture;
 		#else
 		return 0;
 		#endif
@@ -1655,30 +2702,37 @@ namespace lime {
 	void MFVideoBackend::ReleaseTextures () {
 
 		#ifdef LIME_VIDEO_WGL_INTEROP
+		bool current = interopDevice && wglGetCurrentContext () == interopContext;
+
 		for (int i = 0; i < OUTPUT_TEXTURES; i++) {
 
 			if (outputs[i].interop) {
 
-				_wglDXUnregisterObjectNV (interopDevice, outputs[i].interop);
+				if (current && outputs[i].locked) _wglDXUnlockObjectsNV (interopDevice, 1, &outputs[i].interop);
+				if (current) _wglDXUnregisterObjectNV (interopDevice, outputs[i].interop);
 				outputs[i].interop = NULL;
+				outputs[i].locked = false;
 
 			}
 
 			if (outputs[i].glTexture) {
 
-				glDeleteTextures (1, &outputs[i].glTexture);
+				if (current) glDeleteTextures (1, &outputs[i].glTexture);
 				outputs[i].glTexture = 0;
 
 			}
 
 		}
 
-		if (interopDevice) {
+		// Objects from a context that is no longer current are left with it
+		if (interopDevice && wglGetCurrentContext () == interopContext) {
 
 			_wglDXCloseDeviceNV (interopDevice);
-			interopDevice = NULL;
 
 		}
+
+		interopContext = NULL;
+		interopDevice = NULL;
 		#endif
 
 		interopFailed = false;
@@ -1686,29 +2740,80 @@ namespace lime {
 	}
 
 
+	bool MFVideoBackend::SetBusy (MFConnection* connection, bool busy) {
+
+		// PrepareSeek waits for reads in progress, and gives up those that wait
+		// too long. Reads do not start while a seek waits, and a read that
+		// starts after closing has begun is given up.
+		std::lock_guard<std::mutex> lock (streamMutex);
+
+		if (busy) {
+
+			if (seeking) return false;
+			connection->busy = true;
+			connection->cancelled = interrupted.load ();
+
+		} else {
+
+			connection->busy = false;
+			readCondition.notify_all ();
+
+		}
+
+		return true;
+
+	}
+
+
+	void MFVideoBackend::SetByteStream (MFConnection* connection, IMFByteStream* value) {
+
+		// Interrupt and PrepareSeek close the streams from another thread, so a
+		// stream that opened after they gave up on its connection is closed now
+		std::lock_guard<std::mutex> lock (streamMutex);
+		if (connection->byteStream) connection->byteStream->Release ();
+		connection->byteStream = value;
+		if (value && connection->cancelled) value->Close ();
+
+	}
+
+
 	bool MFVideoBackend::SupportsTextures () {
 
-		return hardwareActive && device && !texturesFailed;
+		// HDR frames that VideoDecoder tone maps are decoded into memory
+		return hardwareActive && device && !texturesFailed && frameTransfer == VIDEO_COLOR_TRANSFER_SDR;
 
 	}
 
 
 	bool MFVideoBackend::SwitchToSoftware () {
 
-		// Some drivers fail to decode a stream they accepted, so continue from
-		// the same position in software
+		// Some drivers fail to decode a stream they accepted, and a GPU can be
+		// lost, so decoding continues from the same position in software. The
+		// device and the textures shared with OpenGL stay until closing, as the
+		// GL thread can still be showing frames from them.
 		ClearStaging ();
+		ReleaseProcessor ();
 		videoReader->Release ();
 		videoReader = NULL;
-		ReleaseDeviceManager ();
 
-		if (!OpenVideo (false)) return false;
+		// The advanced video processing turns and stretches frames as the
+		// hardware decoding did, so they keep the shape they opened with. A
+		// network source is opened again, which a seek can give up.
+		if (!SetBusy (&videoConnection, true)) return false;
+		bool opened = OpenVideoReader (false, true) || OpenVideoReader (false, false);
+		SetBusy (&videoConnection, false);
+
+		if (!opened) return false;
 
 		PROPVARIANT position;
 		PropVariantInit (&position);
 		position.vt = VT_I8;
 		position.hVal.QuadPart = videoPosition;
 		videoReader->SetCurrentPosition (TIME_FORMAT_100NS, position);
+
+		// Decoding resumes from the keyframe before, so the frames up to the
+		// last one returned are skipped
+		skipUntil = lastFrameTime;
 		return true;
 
 	}
@@ -1718,7 +2823,8 @@ namespace lime {
 
 		#ifdef LIME_VIDEO_WGL_INTEROP
 		MFOutputTexture& output = outputs[((MFTextureFrame*)frame)->index];
-		if (interopDevice && output.interop) _wglDXUnlockObjectsNV (interopDevice, 1, &output.interop);
+		if (interopDevice && output.interop && output.locked) _wglDXUnlockObjectsNV (interopDevice, 1, &output.interop);
+		output.locked = false;
 		#endif
 
 	}

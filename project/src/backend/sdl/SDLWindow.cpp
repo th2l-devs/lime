@@ -2,6 +2,7 @@
 #include "SDLCursor.h"
 #include "SDLDisplay.h"
 #include "SDLApplication.h"
+#include "SDLMenu.h"
 #include "../../graphics/opengl/OpenGL.h"
 #include "../../graphics/opengl/OpenGLBindings.h"
 
@@ -125,7 +126,20 @@ namespace lime {
 		currentApplication = application;
 		this->flags = flags;
 
+		activeSwapInterval = 0;
+		requestedVSyncMode = (flags & WINDOW_FLAG_VSYNC) ? 1 : 0;
+		transparent = (flags & WINDOW_FLAG_TRANSPARENT) != 0;
+		useVulkan = false;
+
+		if (title && title[0] != '\0' && !SDL_GetHint (SDL_HINT_APP_NAME)) {
+
+			SDL_SetHint (SDL_HINT_APP_NAME, title);
+
+		}
+
 		SDL_WindowFlags sdlWindowFlags = 0;
+
+		if (transparent) sdlWindowFlags |= SDL_WINDOW_TRANSPARENT;
 
 		if (flags & WINDOW_FLAG_FULLSCREEN) sdlWindowFlags |= SDL_WINDOW_FULLSCREEN;
 		if (flags & WINDOW_FLAG_RESIZABLE) sdlWindowFlags |= SDL_WINDOW_RESIZABLE;
@@ -312,7 +326,7 @@ namespace lime {
 
 			if (context && SDL_GL_MakeCurrent (sdlWindow, context)) {
 
-				SDL_GL_SetSwapInterval ((flags & WINDOW_FLAG_VSYNC) ? 1 : 0);
+				activeSwapInterval = SDL_GL_SetSwapInterval ((flags & WINDOW_FLAG_VSYNC) ? 1 : 0) && (flags & WINDOW_FLAG_VSYNC) ? 1 : 0;
 
 				OpenGLBindings::Init ();
 
@@ -421,6 +435,7 @@ namespace lime {
 
 		if (sdlWindow) {
 
+			SDLMenu::Remove (sdlWindow);
 			SDL_DestroyWindow (sdlWindow);
 			sdlWindow = 0;
 
@@ -431,7 +446,7 @@ namespace lime {
 
 	void SDLWindow::Alert (const char* message, const char* title) {
 
-		SDL_FlashWindow (sdlWindow, SDL_FLASH_UNTIL_FOCUSED);
+		Flash (SDL_FLASH_UNTIL_FOCUSED);
 
 		if (message) {
 
@@ -1098,7 +1113,220 @@ namespace lime {
 
 	bool SDLWindow::SetVSync (bool vsync) {
 
-		return SDL_GL_SetSwapInterval (vsync ? 1 : 0) && vsync;
+		SetVSyncMode (vsync ? 1 : 0);
+		return activeSwapInterval != 0;
+
+	}
+
+
+	void SDLWindow::SetVSyncMode (int vsyncMode) {
+
+		requestedVSyncMode = vsyncMode;
+		activeSwapInterval = 0;
+
+		if (!sdlWindow || !context || sdlRenderer) {
+
+			flags &= ~WINDOW_FLAG_VSYNC;
+			return;
+
+		}
+
+		SDL_Window* oldWindow = SDL_GL_GetCurrentWindow ();
+		SDL_GLContext oldContext = SDL_GL_GetCurrentContext ();
+		bool restoreContext = (oldWindow != sdlWindow || oldContext != context);
+
+		if (restoreContext) {
+
+			SDL_GL_MakeCurrent (sdlWindow, context);
+
+		}
+
+		switch (vsyncMode) {
+
+			case 1:
+
+				if (SDL_GL_SetSwapInterval (1)) activeSwapInterval = 1;
+				break;
+
+			case 2:
+			case 3:
+
+				if (SDL_GL_SetSwapInterval (-1)) {
+
+					activeSwapInterval = -1;
+
+				} else if (SDL_GL_SetSwapInterval (1)) {
+
+					activeSwapInterval = 1;
+
+				}
+
+				break;
+
+			default:
+
+				break;
+
+		}
+
+		if (activeSwapInterval == 0) {
+
+			SDL_GL_SetSwapInterval (0);
+			flags &= ~WINDOW_FLAG_VSYNC;
+
+		} else {
+
+			flags |= WINDOW_FLAG_VSYNC;
+
+		}
+
+		if (restoreContext && oldWindow && oldContext) {
+
+			SDL_GL_MakeCurrent (oldWindow, oldContext);
+
+		}
+
+	}
+
+
+	int SDLWindow::GetVSyncInterval () const {
+
+		return activeSwapInterval;
+
+	}
+
+
+	int SDLWindow::GetRequestedVSyncMode () const {
+
+		return requestedVSyncMode;
+
+	}
+
+
+	double SDLWindow::GetRefreshRate () const {
+
+		if (!sdlWindow) return 60.0;
+
+		const SDL_DisplayMode* mode = SDL_GetWindowFullscreenMode (sdlWindow);
+		if (mode && mode->refresh_rate > 0) return mode->refresh_rate;
+
+		SDL_DisplayID display = SDL_GetDisplayForWindow (sdlWindow);
+		mode = display ? SDL_GetCurrentDisplayMode (display) : NULL;
+		if (mode && mode->refresh_rate > 0) return mode->refresh_rate;
+
+		return 60.0;
+
+	}
+
+
+	bool SDLWindow::Flash (int mode) {
+
+		return sdlWindow && SDL_FlashWindow (sdlWindow, (SDL_FlashOperation)mode);
+
+	}
+
+
+	bool SDLWindow::GetKeyboardGrab () {
+
+		return sdlWindow && (SDL_GetWindowFlags (sdlWindow) & SDL_WINDOW_KEYBOARD_GRABBED) != 0;
+
+	}
+
+
+	void SDLWindow::SetKeyboardGrab (bool keyboardGrab) {
+
+		if (sdlWindow) SDL_SetWindowKeyboardGrab (sdlWindow, keyboardGrab);
+
+	}
+
+
+	bool SDLWindow::GetMouseRect (int* x, int* y, int* width, int* height) {
+
+		const SDL_Rect* rect = sdlWindow ? SDL_GetWindowMouseRect (sdlWindow) : NULL;
+		if (!rect) return false;
+
+		*x = rect->x;
+		*y = rect->y;
+		*width = rect->w;
+		*height = rect->h;
+		return true;
+
+	}
+
+
+	void SDLWindow::SetMouseRect (int x, int y, int width, int height) {
+
+		if (!sdlWindow) return;
+
+		if (width < 0 || height < 0) {
+
+			SDL_SetWindowMouseRect (sdlWindow, NULL);
+
+		} else {
+
+			SDL_Rect rect = { x, y, width, height };
+			SDL_SetWindowMouseRect (sdlWindow, &rect);
+
+		}
+
+	}
+
+
+	bool SDLWindow::GetTransparent () {
+
+		return sdlWindow ? (SDL_GetWindowFlags (sdlWindow) & SDL_WINDOW_TRANSPARENT) != 0 : transparent;
+
+	}
+
+
+	bool SDLWindow::SetAlwaysOnTop (bool alwaysOnTop) {
+
+		if (sdlWindow) SDL_SetWindowAlwaysOnTop (sdlWindow, alwaysOnTop);
+		return alwaysOnTop;
+
+	}
+
+
+	int SDLWindow::PopupMenu (const unsigned char* data, int length, int x, int y, bool atCursor) {
+
+		return SDLMenu::Popup (sdlWindow, data, length, x, y, atCursor);
+
+	}
+
+
+	bool SDLWindow::SetMenu (const unsigned char* data, int length) {
+
+		return SDLMenu::SetWindowMenu (sdlWindow, data, length);
+
+	}
+
+
+	uint64_t SDLWindow::CreateVulkanSurface (uintptr_t instance) {
+
+		return 0;
+
+	}
+
+
+	void SDLWindow::GetVulkanDrawableSize (int* width, int* height) {
+
+		if (width) *width = 0;
+		if (height) *height = 0;
+
+	}
+
+
+	bool SDLWindow::GetVulkanInstanceExtensions (unsigned int* count, const char** names) {
+
+		if (count) *count = 0;
+		return false;
+
+	}
+
+
+	void* SDLWindow::GetVulkanInstanceProcAddr () {
+
+		return 0;
 
 	}
 
