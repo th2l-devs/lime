@@ -12,6 +12,11 @@
 #include "emscripten.h"
 #endif
 
+#if defined (ANDROID) && defined (LIME_OPENALSOFT)
+#include <AL/alc.h>
+#include <AL/alext.h>
+#endif
+
 #if defined (LIME_FIX_FREEZE_WINDOW) && defined (HX_WINDOWS)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -35,6 +40,23 @@ namespace lime {
 	const int analogAxisDeadZone = 1000;
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
+
+
+	#if defined (ANDROID) && defined (LIME_OPENALSOFT)
+	static bool SDLCALL AndroidAudioWatcher (void* userdata, SDL_Event* event) {
+
+		if (event->type != SDL_EVENT_WILL_ENTER_BACKGROUND && event->type != SDL_EVENT_DID_ENTER_FOREGROUND) return true;
+
+		ALCcontext* context = alcGetCurrentContext ();
+		ALCdevice* device = context ? alcGetContextsDevice (context) : NULL;
+		if (!device) return true;
+
+		if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND) alcDevicePauseSOFT (device);
+		else alcDeviceResumeSOFT (device);
+		return true;
+
+	}
+	#endif
 
 
 	SDLApplication::SDLApplication () {
@@ -384,6 +406,10 @@ namespace lime {
 		#endif
 
 		SDL_AddEventWatch (WindowEventWatcher, this);
+		#endif
+
+		#if defined (ANDROID) && defined (LIME_OPENALSOFT)
+		SDL_AddEventWatch (AndroidAudioWatcher, this);
 		#endif
 
 	}
@@ -847,6 +873,10 @@ namespace lime {
 
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch (&applicationEvent);
+
+		#if defined (ANDROID) && defined (LIME_OPENALSOFT)
+		SDL_RemoveEventWatch (AndroidAudioWatcher, this);
+		#endif
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
 		SDL_RemoveEventWatch (WindowEventWatcher, this);
