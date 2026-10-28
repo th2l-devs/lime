@@ -767,7 +767,7 @@ class Telemetry
 		try
 		{
 			#if windows
-			Sys.command("cmd", ["/c", "start", "", path]);
+			if (!lime._internal.backend.native.NativeShell.open(path)) Sys.command("cmd", ["/c", "start", "", path]);
 			#elseif mac
 			Sys.command("open", [path]);
 			#else

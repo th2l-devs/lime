@@ -461,7 +461,7 @@ class System
 		if (path != null)
 		{
 			#if (sys && windows)
-			Sys.command("start", ["", path]);
+			if (!lime._internal.backend.native.NativeShell.open(path)) Sys.command("start", ["", path]);
 			#elseif mac
 			Sys.command("/usr/bin/open", [path]);
 			#elseif linux
