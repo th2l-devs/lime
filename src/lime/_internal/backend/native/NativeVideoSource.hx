@@ -256,6 +256,8 @@ class NativeVideoSource
 
 		update();
 
+		if (decoder == null) return false;
+
 		// The first frame after opening or seeking is shown straight away, so a
 		// paused video still has a picture
 		if (decoder.readFrame(frame, hasFrame ? getTime() : -1))
