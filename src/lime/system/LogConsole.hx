@@ -460,7 +460,7 @@ class LogConsole
 		].join("\n");
 		final quotedTitle = StringTools.replace(title, "'", "''");
 		final quotedFile = StringTools.replace(file, "'", "''");
-		final big = iconFile(64) != "" ? iconFile(64) : iconFile(32);
+		final big = iconFile(32) != "" ? iconFile(32) : iconFile(64);
 		final withIcons = StringTools.replace(StringTools.replace(script, "__ICON_SMALL__", iconFile(16)), "__ICON_BIG__", big);
 		return StringTools.replace(StringTools.replace(StringTools.replace(StringTools.replace(withIcons, "__THEME__", theme.toPowerShell()), "__OWNER__", Std.string(owner)), "__TITLE__", quotedTitle), "__FILE__", quotedFile);
 	}
