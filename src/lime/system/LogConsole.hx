@@ -92,7 +92,7 @@ class LogConsole
 			"__THEME__",
 			"$ui = $host.UI.RawUI",
 			"$ui.WindowTitle = $title",
-			"Add-Type -Namespace LimeLog -Name Con -UsingNamespace System.Diagnostics, System.Threading -MemberDefinition @'",
+			"Add-Type -Namespace LimeLog -Name Con -UsingNamespace System.Diagnostics, System.Threading, System.IO -ReferencedAssemblies System.Drawing -MemberDefinition @'",
 			"[StructLayout(LayoutKind.Explicit, Size = 20)]",
 			"public struct InputRecord { [FieldOffset(0)] public short Type; [FieldOffset(4)] public int A; [FieldOffset(8)] public int B; [FieldOffset(12)] public int C; [FieldOffset(16)] public int Flags; }",
 			"[DllImport(\"kernel32.dll\")] public static extern bool GetNumberOfConsoleInputEvents(IntPtr h, out int n);",
@@ -123,12 +123,21 @@ class LogConsole
 			"[DllImport(\"kernel32.dll\")] public static extern bool GetConsoleMode(IntPtr h, out int m);",
 			"[DllImport(\"kernel32.dll\")] public static extern bool SetConsoleMode(IntPtr h, int m);",
 			"public static void Font(string face, short size) { FontInfo f = new FontInfo(); f.cbSize = Marshal.SizeOf(f); f.dwFontSizeY = size; f.FontFamily = 54; f.FontWeight = 400; f.FaceName = face; SetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f); }",
+			"[DllImport(\"kernel32.dll\")] public static extern IntPtr GetConsoleWindow();",
+			"[DllImport(\"user32.dll\")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);",
+			"public static void Icon(string small, string big) {",
+			"  IntPtr w = GetConsoleWindow();",
+			"  if (w == IntPtr.Zero) return;",
+			"  try { if (small != \"\" && File.Exists(small)) SendMessage(w, 0x80, (IntPtr)0, new System.Drawing.Bitmap(small).GetHicon()); } catch { }",
+			"  try { if (big != \"\" && File.Exists(big)) SendMessage(w, 0x80, (IntPtr)1, new System.Drawing.Bitmap(big).GetHicon()); } catch { }",
+			"}",
 			"public static void Watch(int pid) { Thread t = new Thread(() => { try { Process.GetProcessById(pid).WaitForExit(); } catch { } Environment.Exit(0); }); t.IsBackground = true; t.Start(); }",
 			"public static void Vt() { IntPtr h = GetStdHandle(-11); int m; GetConsoleMode(h, out m); SetConsoleMode(h, m | 0x0004); IntPtr i = GetStdHandle(-10); int n; GetConsoleMode(i, out n); SetConsoleMode(i, (n & ~0x0040 & ~0x0200 & ~0x0001 & ~0x0002 & ~0x0004) | 0x0080 | 0x0010); }",
 			"'@",
 			"[LimeLog.Con]::Font($T.font, $T.fontSize)",
 			"[LimeLog.Con]::Vt()",
 			"[LimeLog.Con]::Watch($owner)",
+			"[LimeLog.Con]::Icon('__ICON_SMALL__', '__ICON_BIG__')",
 			"$cols = [Math]::Min($T.columns, $ui.MaxPhysicalWindowSize.Width)",
 			"$rows = [Math]::Min($T.rows, $ui.MaxPhysicalWindowSize.Height)",
 			"$ui.WindowSize = New-Object Management.Automation.Host.Size([Math]::Min($cols, $ui.WindowSize.Width), [Math]::Min($rows, $ui.WindowSize.Height))",
@@ -414,7 +423,32 @@ class LogConsole
 		].join("\n");
 		final quotedTitle = StringTools.replace(title, "'", "''");
 		final quotedFile = StringTools.replace(file, "'", "''");
-		return StringTools.replace(StringTools.replace(StringTools.replace(StringTools.replace(script, "__THEME__", theme.toPowerShell()), "__OWNER__", Std.string(owner)), "__TITLE__", quotedTitle), "__FILE__", quotedFile);
+		final big = iconFile(64) != "" ? iconFile(64) : iconFile(32);
+		final withIcons = StringTools.replace(StringTools.replace(script, "__ICON_SMALL__", iconFile(16)), "__ICON_BIG__", big);
+		return StringTools.replace(StringTools.replace(StringTools.replace(StringTools.replace(withIcons, "__THEME__", theme.toPowerShell()), "__OWNER__", Std.string(owner)), "__TITLE__", quotedTitle), "__FILE__", quotedFile);
+	}
+
+	static function iconFile(size:Int):String
+	{
+		#if sys
+		final bytes = haxe.Resource.getBytes("lime-shell-" + size);
+		if (bytes == null) return "";
+		var dir = Sys.getEnv("TEMP");
+		if (dir == null || dir == "") dir = Sys.getEnv("TMP");
+		if (dir == null || dir == "") return "";
+		final path = haxe.io.Path.join([dir, "lime-log-console-shell-" + size + ".png"]);
+		try
+		{
+			sys.io.File.saveBytes(path, bytes);
+		}
+		catch (e:Dynamic)
+		{
+			if (!sys.FileSystem.exists(path)) return "";
+		}
+		return StringTools.replace(path, "'", "''");
+		#else
+		return "";
+		#end
 	}
 
 	static function scriptFile(owner:Int):String
