@@ -23,6 +23,8 @@ class LogConsoleTheme
 	public var logMessage:String = "#A1A1AA";
 	public var renderText:String = "#FFFFFF";
 	public var renderBg:String = "#0F766E";
+	public var garbageText:String = "#FFFFFF";
+	public var garbageBg:String = "#A16207";
 	public var chip:String = "#DDD6FE";
 	public var chipBg:String = "#2E1065";
 	public var labelError:String = "FAILED";
@@ -31,6 +33,7 @@ class LogConsoleTheme
 	public var tags:Array<String> = ["#A78BFA", "#34D399", "#F472B6", "#38BDF8", "#FB923C", "#FACC15", "#2DD4BF", "#F87171"];
 	public var labelLog:String = "TRACE";
 	public var labelRender:String = "RENDER";
+	public var labelGarbage:String = "GARBAGE";
 	public var labelSession:String = "SESSION";
 	public var font:String = "Consolas";
 	public var fontSize:Int = 16;
