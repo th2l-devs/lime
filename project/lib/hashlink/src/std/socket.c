@@ -25,8 +25,8 @@
 #pragma warning(disable:4548)
 
 #	include <string.h>
-#	define _WINSOCKAPI_
 #	include <hl.h>
+#	undef _GUID
 #	include <winsock2.h>
 #	define FDSIZE(n)	(sizeof(void*) + (n) * sizeof(SOCKET))
 #	define SHUT_WR		SD_SEND
@@ -41,7 +41,9 @@
 #	include <hl.h>
 #	include <posix/posix.h>
 #else
+#	ifndef _GNU_SOURCE
 #	define _GNU_SOURCE
+#	endif
 #	include <string.h>
 #	include <sys/types.h>
 #	include <sys/socket.h>
@@ -133,6 +135,13 @@ HL_PRIM hl_socket *hl_socket_new( bool udp ) {
 	}
 }
 
+HL_PRIM bool hl_socket_set_broadcast( hl_socket *s, bool b ) {
+	int broadcast = b;
+	if( !s )
+		return false;
+	return setsockopt(s->sock,SOL_SOCKET,SO_BROADCAST,(char*)&broadcast,sizeof(broadcast)) == 0;
+}
+
 HL_PRIM void hl_socket_close( hl_socket *s ) {
 	if( !s ) return;
 	closesocket(s->sock);
@@ -156,7 +165,7 @@ HL_PRIM int hl_socket_send( hl_socket *s, vbyte *buf, int pos, int len ) {
 	r = send(s->sock, (char*)buf + pos, len, MSG_NOSIGNAL);
 	if( r == SOCKET_ERROR )
 		return block_error();
-	return len;
+	return r;
 }
 
 
@@ -466,6 +475,9 @@ HL_PRIM bool hl_socket_select( varray *ra, varray *wa, varray *ea, char *tmp, in
 	hl_blocking(true);
 	if( select((int)(max+1),ra?rs:NULL,wa?ws:NULL,ea?es:NULL,tt) == SOCKET_ERROR ) {
 		hl_blocking(false);
+#		ifndef HL_WIN
+		if( errno == EINTR ) return true;
+#		endif
 		return false;
 	}
 	hl_blocking(false);
@@ -478,6 +490,7 @@ HL_PRIM bool hl_socket_select( varray *ra, varray *wa, varray *ea, char *tmp, in
 #define _SOCK	_ABSTRACT(hl_socket)
 DEFINE_PRIM(_VOID,socket_init,_NO_ARG);
 DEFINE_PRIM(_SOCK,socket_new,_BOOL);
+DEFINE_PRIM(_BOOL,socket_set_broadcast,_SOCK _BOOL);
 DEFINE_PRIM(_VOID,socket_close,_SOCK);
 DEFINE_PRIM(_I32,socket_send_char,_SOCK _I32);
 DEFINE_PRIM(_I32,socket_send,_SOCK _BYTES _I32 _I32 );

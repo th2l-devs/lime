@@ -21,12 +21,25 @@
  */
 #include <hl.h>
 #include <hlmodule.h>
+#include "hlsystem.h"
 
 #ifdef HL_LINUX
 #include <semaphore.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#endif
+
+#if defined(HL_MAC)
+#include <sys/stat.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <dlfcn.h>
+#include <objc/runtime.h>
+#include <dispatch/dispatch.h>
+#include <execinfo.h>
+#include <stdio.h>
+#include <stdlib.h>
 #endif
 
 #if defined(__GLIBC__)
@@ -42,26 +55,19 @@
 #define MAX_STACK_COUNT 2048
 
 HL_API double hl_sys_time( void );
-HL_API void *hl_gc_threads_info( void );
-HL_API void hl_setup_profiler( void *, void * );
 int hl_module_capture_stack_range( void *stack_top, void **stack_ptr, void **out, int size );
 uchar *hl_module_resolve_symbol_full( void *addr, uchar *out, int *outSize, int **r_debug_addr );
-
-typedef struct {
-	int count;
-	bool stopping_world;
-	hl_thread_info **threads;
-} hl_gc_threads;
 
 typedef struct _thread_handle thread_handle;
 typedef struct _profile_data profile_data;
 
 struct _thread_handle {
 	int tid;
-#	ifdef HL_WIN_DESKTOP
+#	ifdef HL_WIN
 	HANDLE h;
 #	endif
 	hl_thread_info *inf;
+	char name[128];
 	thread_handle *next;
 };
 
@@ -83,10 +89,12 @@ static struct {
 	volatile bool stopLoop;
 	volatile bool waitLoop;
 	thread_handle *handles;
+	thread_handle *olds;
 	void **tmpMemory;
 	void *stackOut[MAX_STACK_COUNT];
 	profile_data *record;
 	profile_data *first_record;
+	hl_condition *waitCond;
 } data = {0};
 
 #ifdef HL_LINUX
@@ -106,6 +114,23 @@ static void sigprof_handler(int sig, siginfo_t *info, void *ucontext)
 	sem_wait(&shared_context.msg3);
 	sem_post(&shared_context.msg4);
 }
+#elif defined(HL_MAC)
+static struct
+{
+	dispatch_semaphore_t msg2;
+	dispatch_semaphore_t  msg3;
+	dispatch_semaphore_t  msg4;
+	ucontext_t context;
+} shared_context;
+
+static void sigprof_handler(int sig, siginfo_t *info, void *ucontext)
+{
+	ucontext_t *ctx = ucontext;
+	shared_context.context = *ctx;
+	dispatch_semaphore_signal(shared_context.msg2);
+	dispatch_semaphore_wait(shared_context.msg3, DISPATCH_TIME_FOREVER);
+	dispatch_semaphore_signal(shared_context.msg4);
+}
 #endif
 
 static void *get_thread_stackptr( thread_handle *t, void **eip ) {
@@ -120,7 +145,7 @@ static void *get_thread_stackptr( thread_handle *t, void **eip ) {
 	*eip = (void*)c.Eip;
 	return (void*)c.Esp;
 #	endif
-#elif defined(HL_LINUX)
+#elif defined(HL_LINUX) && (defined(__x86_64__) || defined(__i386__))
 #	ifdef HL_64
 	*eip = (void*)shared_context.context.uc_mcontext.gregs[REG_RIP];
 	return (void*)shared_context.context.uc_mcontext.gregs[REG_RSP];
@@ -128,6 +153,17 @@ static void *get_thread_stackptr( thread_handle *t, void **eip ) {
 	*eip = (void*)shared_context.context.uc_mcontext.gregs[REG_EIP];
 	return (void*)shared_context.context.uc_mcontext.gregs[REG_ESP];
 #	endif
+#elif defined(HL_LINUX) && defined(__aarch64__)
+	// Linux/Android ARM64: uc_mcontext has direct regs[] / sp / pc fields.
+	*eip = (void*)shared_context.context.uc_mcontext.pc;
+	return (void*)shared_context.context.uc_mcontext.sp;
+#elif defined(HL_MAC) && defined(__x86_64__)
+	struct __darwin_mcontext64 *mcontext = shared_context.context.uc_mcontext;
+	if (mcontext != NULL) {
+		*eip = (void*)mcontext->__ss.__rip;
+		return (void*)mcontext->__ss.__rsp;
+	}
+	return NULL;
 #else
 	return NULL;
 #endif
@@ -161,6 +197,15 @@ static bool pause_thread( thread_handle *t, bool b ) {
 		sem_post(&shared_context.msg3);
 		return sem_wait(&shared_context.msg4) == 0;
 	}
+#elif defined(HL_MAC)
+	if( b ) {
+		pthread_kill( t->inf->pthread_id, SIGPROF);
+		return dispatch_semaphore_wait(shared_context.msg2, DISPATCH_TIME_FOREVER) == 0;
+	} else {
+		dispatch_semaphore_signal(shared_context.msg3);
+		return dispatch_semaphore_wait(shared_context.msg4, DISPATCH_TIME_FOREVER) == 0;
+	}
+	return false;
 #else
 	return false;
 #endif
@@ -195,13 +240,21 @@ static void read_thread_data( thread_handle *t ) {
 		return;
 	}
 
-#ifdef HL_LINUX
+#if defined(HL_LINUX) || defined(HL_MAC)
     int count = hl_module_capture_stack_range(t->inf->stack_top, stack, data.stackOut, MAX_STACK_COUNT);
     pause_thread(t, false);
 #else
 	int size = (int)((unsigned char*)t->inf->stack_top - (unsigned char*)stack);
 	if( size > MAX_STACK_SIZE-32 ) size = MAX_STACK_SIZE-32;
-	memcpy(data.tmpMemory + 2,stack,size);
+#if defined(HL_WIN_DESKTOP) && defined(HL_VCC)
+	// it seems we rarely can't make a first read on the thread stack, let's ignore errors and wait.
+	__try {
+#endif
+		memcpy(data.tmpMemory + 2,stack,size);
+#if defined(HL_WIN_DESKTOP) && defined(HL_VCC)
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+	}
+#endif
 	pause_thread(t, false);
 	data.tmpMemory[0] = eip;
 	data.tmpMemory[1] = stack;
@@ -211,26 +264,50 @@ static void read_thread_data( thread_handle *t ) {
 #endif
 	int eventId = count | 0x80000000;
 	double time = hl_sys_time();
-	struct { int count; bool stop; } *gc = hl_gc_threads_info();
-	if( gc->stop ) eventId |= 0x40000000;
+	hl_threads_info *gc = hl_gc_threads_info();
+	if( gc->stopping_world ) eventId |= 0x40000000;
 	record_data(&time,sizeof(double));
 	record_data(&t->tid,sizeof(int));
 	record_data(&eventId,sizeof(int));
 	record_data(data.stackOut,sizeof(void*)*count);
+	if( *t->inf->thread_name && !*t->name )
+		memcpy(t->name, t->inf->thread_name, sizeof(t->name));
+}
+
+static void profile_pause() {
+	hl_condition_acquire(data.waitCond);
+	data.profiling_pause++;
+	hl_condition_broadcast(data.waitCond);
+	hl_condition_release(data.waitCond);
+}
+
+static void profile_resume() {
+	hl_condition_acquire(data.waitCond);
+	data.profiling_pause--;
+	hl_condition_broadcast(data.waitCond);
+	hl_condition_release(data.waitCond);
 }
 
 static void hl_profile_loop( void *_ ) {
 	double wait_time = 1. / data.sample_count;
 	double next = hl_sys_time();
 	data.tmpMemory = malloc(MAX_STACK_SIZE);
+	data.waitLoop = false;
 	while( !data.stopLoop ) {
 		double t = hl_sys_time();
+		hl_condition_acquire(data.waitCond);
 		if( t < next || data.profiling_pause ) {
 			if( !(t < next) ) next = t;
-			data.waitLoop = false;
+			if( data.profiling_pause ) {
+				data.waitLoop = true;
+				hl_condition_wait(data.waitCond);
+				data.waitLoop = false;
+			}
+			hl_condition_release(data.waitCond);
 			continue;
 		}
-		hl_gc_threads *threads = (hl_gc_threads*)hl_gc_threads_info();
+		hl_condition_release(data.waitCond);
+		hl_threads_info *threads = hl_gc_threads_info();
 		int i;
 		thread_handle *prev = NULL;
 		thread_handle *cur = data.handles;
@@ -239,13 +316,40 @@ static void hl_profile_loop( void *_ ) {
 			if( t->flags & HL_THREAD_INVISIBLE ) continue;
 
 			if( !cur || cur->tid != t->thread_id ) {
-				thread_handle *h = malloc(sizeof(thread_handle));
-				h->tid = t->thread_id;
-				h->inf = t;
-				thread_data_init(h);
-				h->next = cur;
-				cur = h;
-				if( prev == NULL ) data.handles = h; else prev->next = h;
+				// have we lost a thread ?
+				thread_handle *h = cur;
+				thread_handle *hprev = prev;
+				while( h ) {
+					if( h->tid == t->thread_id ) {
+						// remove from previous queue
+						if( hprev ) {
+							hprev->next = h->next;
+						} else {
+							data.handles = h->next;
+						}
+						// insert at current position
+						if( prev ) {
+							h->next = prev->next;
+							prev->next = h;
+						} else {
+							h->next = data.handles;
+							data.handles = h;
+						}
+						break;
+					}
+					hprev = h;
+					h = h->next;
+				}
+				if( !h ) {
+					h = malloc(sizeof(thread_handle));
+					memset(h,0,sizeof(thread_handle));
+					h->tid = t->thread_id;
+					h->inf = t;
+					thread_data_init(h);
+					h->next = cur;
+					cur = h;
+					if( prev == NULL ) data.handles = h; else prev->next = h;
+				}
 			}
 			if( (t->flags & HL_THREAD_PROFILER_PAUSED) == 0 )
 				read_thread_data(cur);
@@ -254,9 +358,15 @@ static void hl_profile_loop( void *_ ) {
 		}
 		if( prev ) prev->next = NULL; else data.handles = NULL;
 		while( cur != NULL ) {
+			thread_handle *n;
 			thread_data_free(cur);
-			free(cur);
-			cur = cur->next;
+			n = cur->next;
+			if( *cur->name ) {
+				cur->next = data.olds;
+				data.olds = cur;
+			} else
+				free(cur);
+			cur = n;
 		}
 		next += wait_time;
 	}
@@ -269,12 +379,17 @@ static void hl_profile_loop( void *_ ) {
 static void profile_event( int code, vbyte *data, int dataLen );
 
 void hl_profile_setup( int sample_count ) {
-#	if defined(HL_THREADS) && (defined(HL_WIN_DESKTOP) || defined(HL_LINUX))
-	hl_setup_profiler(profile_event,hl_profile_end);
+#	if defined(HL_THREADS) && (defined(HL_WIN_DESKTOP) || defined(HL_LINUX) || defined (HL_MAC))
+	if( data.waitCond == NULL ) {
+		data.waitCond = hl_condition_alloc();
+		hl_add_root(&data.waitCond);
+	}
+	hl_setup.profile_event = profile_event;
+	hl_setup.before_exit = hl_profile_end;
 	if( data.sample_count ) return;
 	if( sample_count < 0 ) {
 		// was not started with --profile : pause until we get start event
-		data.profiling_pause++;
+		profile_pause();
 		return;
 	}
 	data.sample_count = sample_count;
@@ -284,7 +399,16 @@ void hl_profile_setup( int sample_count ) {
 	sem_init(&shared_context.msg4, 0, 0);
 	struct sigaction action = {0};
 	action.sa_sigaction = sigprof_handler;
-	action.sa_flags = SA_SIGINFO;
+	action.sa_flags = SA_SIGINFO | SA_RESTART;
+	sigaction(SIGPROF, &action, NULL);
+#	elif defined(HL_MAC)
+	shared_context.context.uc_mcontext = NULL;
+	shared_context.msg2 = dispatch_semaphore_create(0);
+	shared_context.msg3 = dispatch_semaphore_create(0);
+	shared_context.msg4 = dispatch_semaphore_create(0);
+	struct sigaction action = {0};
+	action.sa_sigaction = sigprof_handler;
+	action.sa_flags = SA_SIGINFO | SA_RESTART;
 	sigaction(SIGPROF, &action, NULL);
 #	endif
 	hl_thread_start(hl_profile_loop,NULL,false);
@@ -307,14 +431,38 @@ static bool read_profile_data( profile_reader *r, void *ptr, int size ) {
 	return true;
 }
 
-static void profile_dump() {
+static int write_names( thread_handle *h, FILE *f ) {
+	int count = 0;
+	while( h ) {
+		if( *h->name ) {
+			if( f ) {
+				int len = (int)strlen(h->name);
+				fwrite(&h->tid,1,4,f);
+				fwrite(&len,1,4,f);
+				fwrite(h->name,1,len,f);
+			} else
+				count++;
+		}
+		h = h->next;
+	}
+	return count;
+}
+
+static void profile_dump( vbyte* ptr ) {
 	if( !data.first_record ) return;
 
-	data.profiling_pause++;
+	profile_pause();
 	printf("Writing profiling data...\n");
 	fflush(stdout);
 
-	FILE *f = fopen("hlprofile.dump","wb");
+	char* filename = ptr == NULL ? "hlprofile.dump" : hl_to_utf8((uchar*)ptr);
+	FILE *f = fopen(filename,"wb");
+	if( f == NULL ) {
+		profile_resume();
+		printf("Failed to open file %s, 0 profile samples saved\n", filename);
+		hl_error("Failed to open file");
+		return;
+	}
 	int version = HL_VERSION;
 	fwrite("PROF",1,4,f);
 	fwrite(&version,1,4,f);
@@ -365,6 +513,9 @@ static void profile_dump() {
 			}
 		}
 	}
+	double tend = -1;
+	fwrite(&tend,1,8,f);
+
 	// reset debug_addr flags (allow further dumps)
 	r.r = data.first_record;
 	r.pos = 0;
@@ -387,15 +538,25 @@ static void profile_dump() {
 			read_profile_data(&r,NULL,size);
 		}
 	}
+	// dump threads names
+	int names_count = write_names(data.handles,NULL) + write_names(data.olds,NULL);
+	fwrite(&names_count,1,4,f);
+	write_names(data.handles,f);
+	write_names(data.olds,f);
+	// done
 	fclose(f);
-	printf("%d profile samples saved\n", samples);
-	data.profiling_pause--;
+	printf("%d profile samples saved to %s\n", samples, filename);
+	profile_resume();
 }
 
 void hl_profile_end() {
-	profile_dump();
+	profile_dump(NULL);
 	if( !data.sample_count ) return;
 	data.stopLoop = true;
+	hl_condition_acquire(data.waitCond);
+	data.profiling_pause = 0;
+	hl_condition_broadcast(data.waitCond);
+	hl_condition_release(data.waitCond);
 	while( data.stopLoop ) {};
 }
 
@@ -408,9 +569,8 @@ static void profile_event( int code, vbyte *ptr, int dataLen ) {
 		hl_get_thread()->flags &= ~HL_THREAD_PROFILER_PAUSED;
 		break;
 	case -3:
-		data.profiling_pause++;
-		data.waitLoop = true;
-		while( data.waitLoop ) {}
+		profile_pause();
+		while( !data.waitLoop ) {}
 		profile_data *d = data.first_record;
 		while( d ) {
 			profile_data *n = d->next;
@@ -420,16 +580,16 @@ static void profile_event( int code, vbyte *ptr, int dataLen ) {
 		}
 		data.first_record = NULL;
 		data.record = NULL;
-		data.profiling_pause--;
+		profile_resume();
 		break;
 	case -4:
-		data.profiling_pause++;
+		profile_pause();
 		break;
 	case -5:
-		data.profiling_pause--;
+		profile_resume();
 		break;
 	case -6:
-		profile_dump();
+		profile_dump(ptr);
 		break;
 	case -7:
 		{
@@ -443,16 +603,15 @@ static void profile_event( int code, vbyte *ptr, int dataLen ) {
 	default:
 		if( code < 0 ) return;
 		if( data.profiling_pause || (code != 0 && (hl_get_thread()->flags & HL_THREAD_PROFILER_PAUSED)) ) return;
-		data.profiling_pause++;
-		data.waitLoop = true;
-		while( data.waitLoop ) {}
+		profile_pause();
+		while( !data.waitLoop ) {}
 		double time = hl_sys_time();
 		record_data(&time,sizeof(double));
 		record_data(&hl_get_thread()->thread_id,sizeof(int));
 		record_data(&code,sizeof(int));
 		record_data(&dataLen,sizeof(int));
 		record_data(ptr,dataLen);
-		data.profiling_pause--;
+		profile_resume();
 		break;
 	}
 }

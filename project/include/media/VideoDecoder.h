@@ -3,6 +3,7 @@
 
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -32,8 +33,25 @@ namespace lime {
 	};
 
 
+	// How a frame's values are turned into light
+	enum VideoColorTransfer {
+
+		// Standard range, as BT.709 and BT.601 video are
+		VIDEO_COLOR_TRANSFER_SDR = 0,
+
+		// SMPTE ST 2084, which HDR10 video uses
+		VIDEO_COLOR_TRANSFER_PQ = 1,
+
+		// Hybrid log-gamma, ARIB STD-B67, which phones record HDR video in
+		VIDEO_COLOR_TRANSFER_HLG = 2
+
+	};
+
+
 	enum VideoDecodeResult {
 
+		// Nothing was decoded, as a seek is waiting, so the call is made again
+		VIDEO_DECODE_AGAIN = 2,
 		VIDEO_DECODE_OK = 1,
 		VIDEO_DECODE_END = 0,
 		VIDEO_DECODE_ERROR = -1
@@ -46,7 +64,8 @@ namespace lime {
 		VIDEO_FRAME_FORMAT_NV12 = 0,
 		VIDEO_FRAME_FORMAT_RGBA = 1,
 		VIDEO_FRAME_FORMAT_TEXTURE = 2,
-		VIDEO_FRAME_FORMAT_BGRA = 3
+		VIDEO_FRAME_FORMAT_BGRA = 3,
+		VIDEO_FRAME_FORMAT_ARGB = 4
 
 	};
 
@@ -69,6 +88,11 @@ namespace lime {
 		VideoColorMatrix colorMatrix;
 		bool fullRange;
 		int height;
+
+		// VideoDecoder tone maps frames with an HDR transfer, and BT.2020
+		// primaries, to standard range, unless the backend already has
+		VideoColorTransfer transfer;
+
 		const unsigned char* u;
 		int uvPixelStride;
 		int uvStride;
@@ -76,6 +100,27 @@ namespace lime {
 		int width;
 		const unsigned char* y;
 		int yStride;
+
+	};
+
+
+	// Shows HDR frames in standard range, writing them as BT.709 video range
+	// NV12 through a table of what each luma and chroma become, which is built
+	// once for each kind of frame and kept
+	class VideoToneMapper {
+
+
+		public:
+
+			// Points planes at a tone mapped copy, which stays valid until the next
+			// call
+			void Map (VideoPlanes* planes);
+
+
+		private:
+
+			std::vector<unsigned char> buffer;
+
 
 	};
 
@@ -95,15 +140,43 @@ namespace lime {
 	};
 
 
+	// Where resampling has reached, carried from one packet of audio to the next
+	struct VideoAudioConverter {
+
+		VideoAudioConverter () : position (0), previousChannels (0) { previous[0] = previous[1] = 0; }
+
+		void Reset () { position = 0; previousChannels = 0; }
+
+		double position;
+		short previous[2];
+		int previousChannels;
+
+	};
+
+
 	struct VideoStreamInfo {
 
 		int audioChannels;
 		int audioSampleRate;
+
+		// Set when the file has a stream of that kind that cannot be decoded, such
+		// as one in a codec the platform lacks, so the video plays without it
+		bool audioUnsupported;
+
 		double duration;
 		double frameRate;
 		bool hasAudio;
 		bool hasVideo;
 		int height;
+
+		// The width of a pixel relative to its height, or 0 when unknown
+		double pixelAspectRatio;
+
+		// The clockwise rotation in degrees that shows frames upright, as phones
+		// record portrait video sideways with a rotation to apply
+		int rotation;
+
+		bool videoUnsupported;
 		int width;
 
 	};
@@ -136,6 +209,12 @@ namespace lime {
 
 			virtual bool Open (const char* path, bool hardwareDecoding, VideoStreamInfo* info) = 0;
 
+			// Called from another thread when a seek is waiting for the streams, so
+			// a stream waiting on a stalled network source returns
+			// VIDEO_DECODE_AGAIN from DecodeAudio or DecodeVideo soon, rather than
+			// holding up the seek. Seek ends it, whether it succeeds or not.
+			virtual void PrepareSeek () {}
+
 			// Seeks both streams to the keyframe at or before time.
 			virtual bool Seek (double time) = 0;
 
@@ -165,12 +244,30 @@ namespace lime {
 			// Deletes the backend's GL objects, with the GL context current.
 			virtual void ReleaseTextures () {}
 
+			// Deletes the GL objects that backends of this kind left when they closed
+			// away from the GL thread, where their context is current. Called on the
+			// GL thread before each texture frame is read.
+			virtual void ReleaseOrphans () {}
+
 			static VideoBackend* Create ();
 			static bool IsSupported ();
-			static void (*releaseOrphans) ();
+
+			// Appends interleaved signed 16-bit PCM with channels channels at rate to
+			// pcm, mixed to outChannels, 1 or 2, and resampled to outRate, for a
+			// stream whose format changes after opening
+			static void ConvertAudio (const short* in, int frames, int channels, int rate, int outChannels, int outRate, VideoAudioConverter* converter, std::vector<unsigned char>* pcm);
 
 			static void DownmixToStereo (const short* in, int frames, int channels, std::vector<unsigned char>* pcm);
+
+			// The GL context current on this thread, so backends can tell when the
+			// application's context is replaced, as Android does after losing it,
+			// or 0 when it is not known
+			static void* GetCurrentGLContext ();
+
 			static VideoColorMatrix GetDefaultColorMatrix (int width, int height);
+
+			// Turns a rotation in degrees into 0, 90, 180 or 270
+			static int NormalizeRotation (int degrees);
 
 
 	};
@@ -208,12 +305,17 @@ namespace lime {
 
 			// Seeks both streams. An accurate seek drops the frames and audio
 			// before time, otherwise reading resumes from the preceding keyframe.
-			void Seek (double time, bool accurate);
+			// Seeking to the end or past it ends both streams. Returns false when
+			// the backend cannot seek, such as on a live stream, and decoding then
+			// carries on from where it was.
+			bool Seek (double time, bool accurate);
 
 			static int GetFrameLength (VideoFrameFormat format, int width, int height);
 			static int WriteFrame (const VideoPlanes* planes, VideoFrameFormat format, unsigned char* data, int length);
 
 			std::atomic<double> audioTime;
+			std::atomic<bool> dropLateFrames;
+			std::atomic<int> droppedFrames;
 			VideoFrameFormat format;
 			VideoColorMatrix frameColorMatrix;
 			double frameDuration;
@@ -255,8 +357,10 @@ namespace lime {
 			int ReadTexture (double time);
 			void ReleaseFrame (Frame* frame);
 			void ReleaseTextures ();
+			bool SeekStreams (double time, bool accurate, bool keepAudio);
 			void StartThreads ();
 			void StopThreads ();
+			void ThreadStopped ();
 			unsigned int UploadTexture (Frame* frame);
 			void VideoThread ();
 
@@ -267,28 +371,35 @@ namespace lime {
 			bool audioError;
 			size_t audioQueued;
 			double audioQueueEnd;
+			double audioSeekTime;
 			std::thread audioThread;
 			VideoBackend* backend;
 			Frame* currentFrame;
 			std::vector<AudioChunk*> freeChunks;
 			std::vector<Frame*> freeFrames;
 			std::deque<Frame*> frames;
+			std::chrono::steady_clock::time_point lastQueued;
 			std::mutex mutex;
 			bool open;
+			double presentationTime;
 			bool quit;
+			int runningThreads;
 			bool seekAccurate;
 			bool seekPending;
-			double seekTime;
+			std::condition_variable stoppedCondition;
 			unsigned int texture;
+			void* textureContext;
 			int textureHeight;
 			std::atomic<bool> texturesFailed;
 			std::thread::id textureThread;
 			bool textureThreadKnown;
 			int textureWidth;
+			VideoToneMapper toneMapper;
 			std::condition_variable videoCondition;
 			std::mutex videoDecodeMutex;
 			bool videoEnded;
 			bool videoError;
+			double videoSeekTime;
 			std::thread videoThread;
 
 

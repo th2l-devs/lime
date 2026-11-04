@@ -24,26 +24,47 @@
 #endif
 
 #include <hl.h>
+#include "hlsystem.h"
+
 #include <stdio.h>
 #ifdef HL_CONSOLE
 #	include <posix/posix.h>
 #endif
 #ifdef HL_WIN
 #ifdef HL_WIN_DESKTOP
-#	include <windows.h>
 #	include <io.h>
 #	include <fcntl.h>
-#else
-#	include<xdk.h>
 #endif
 #	define fopen(name,mode) _wfopen(name,mode)
 #	define HL_UFOPEN
+#else
+#include <errno.h>
 #endif
 
 #ifdef HL_WIN_DESKTOP
 #	define SET_IS_STD(f,b) (f)->is_std = b
 #else
 #	define SET_IS_STD(f,b)
+#endif
+
+#ifndef HL_WIN
+// retry if we were interrupted by a signal (profiler triggered for example)
+static size_t fread_retry( void *buffer, size_t size, size_t count, FILE *f ) {
+	size_t ret;
+	do {
+		ret = fread(buffer,size,count,f);
+	} while( ret == 0 && ferror(f) && errno == EINTR );
+	return ret;
+}
+static size_t fwrite_retry( void *buffer, size_t size, size_t count, FILE *f ) {
+	size_t ret;
+	do {
+		ret = fwrite(buffer,size,count,f);
+	} while( ret == 0 && ferror(f) && errno == EINTR );
+	return ret;
+}
+#define fread fread_retry
+#define fwrite fwrite_retry
 #endif
 
 typedef struct _hl_fdesc hl_fdesc;
@@ -98,21 +119,6 @@ HL_PRIM int hl_file_write( hl_fdesc *f, vbyte *buf, int pos, int len ) {
 	int ret;
 	if( !f ) return -1;
 	hl_blocking(true);
-#	ifdef HL_WIN_DESKTOP
-	if( f->is_std ) {
-		// except utf8, handle the case where it's not \0 terminated
-		uchar *out = (uchar*)malloc((len+1)*2);
-		vbyte prev = buf[pos+len-1];
-		if( buf[pos+len] ) buf[pos+len-1] = 0;
-		int olen = hl_from_utf8(out,len,(const char*)(buf+pos));
-		buf[pos+len-1] = prev;
-		_setmode(fileno(f->f),_O_U8TEXT);
-		ret = _write(fileno(f->f),out,olen<<1);
-		_setmode(fileno(f->f),_O_TEXT);
-		if( ret > 0 ) ret = len;
-		free(out);
-	} else
-#	endif
 	ret = (int)fwrite(buf+pos,1,len,f->f);
 	hl_blocking(false);
 	return ret;
@@ -132,15 +138,6 @@ HL_PRIM bool hl_file_write_char( hl_fdesc *f, int c ) {
 	unsigned char cc = (unsigned char)c;
 	if( !f ) return false;
 	hl_blocking(true);
-#	ifdef HL_WIN_DESKTOP
-	if( f->is_std ) {
-		uchar wcc = cc;
-		_setmode(fileno(f->f),_O_U8TEXT);
-		ret = _write(fileno(f->f),&wcc,2);
-		_setmode(fileno(f->f),_O_TEXT);
-		if( ret > 0 ) ret = 1;
-	} else
-#	endif
 	ret = fwrite(&cc,1,1,f->f);
 	hl_blocking(false);
 	return ret == 1;
@@ -188,6 +185,10 @@ HL_PRIM double hl_file_tell2( hl_fdesc *f ) {
 HL_PRIM bool hl_file_eof( hl_fdesc *f ) {
 	if( !f ) return true;
 	return (bool)feof(f->f);
+}
+
+HL_PRIM int hl_file_error_code() {
+	return errno;
 }
 
 HL_PRIM bool hl_file_flush( hl_fdesc *f ) {
@@ -266,4 +267,5 @@ DEFINE_PRIM(_FILE, file_stdout, _NO_ARG);
 DEFINE_PRIM(_FILE, file_stderr, _NO_ARG);
 DEFINE_PRIM(_BYTES, file_contents, _BYTES _REF(_I32));
 DEFINE_PRIM(_BOOL, file_is_locked, _BYTES);
+DEFINE_PRIM(_I32, file_error_code, _NO_ARG);
 

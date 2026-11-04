@@ -3,11 +3,17 @@ package lime.media;
 import lime.system.CFFI;
 import lime.app.Application;
 import haxe.Timer;
+#if (lime_cffi && !macro && lime_openal)
 import lime._internal.backend.native.NativeCFFI;
+import lime._internal.backend.native.NativeAudioSource;
+import lime._internal.backend.native.NativeVideoSource;
+#end
+#if (!lime_doc_gen || lime_openal)
 import lime.media.openal.AL;
 import lime.media.openal.ALC;
 import lime.media.openal.ALContext;
 import lime.media.openal.ALDevice;
+#end
 #if (js && html5)
 import js.Browser;
 #end
@@ -20,7 +26,20 @@ import js.Browser;
 class AudioManager
 {
 	public static var context:AudioContext;
+	@:noCompletion public static var __contextGeneration(default, null):Int = 0;
 	@:noCompletion public static var __suspended(default, null):Bool = false;
+	private static inline var OUTPUT_DEVICE_POLL_TIME:Int = 1000;
+	#if (!lime_doc_gen || lime_openal)
+	private static var outputDevice:ALDevice;
+	#else
+	private static var outputDevice:Dynamic;
+	#end
+	private static var outputDeviceHasDisconnectExt:Bool;
+	private static var outputDeviceName:String;
+	private static var outputDevicePreferredName:String;
+	private static var outputDeviceRecovering:Bool;
+	private static var outputDeviceTimer:Timer;
+	@:noCompletion private static var __systemEvents:Bool = false;
 
 	public static function init(context:AudioContext = null)
 	{
@@ -41,6 +60,7 @@ class AudioManager
 					var ctx = device != null ? alc.createContext(device) : null;
 					alc.makeContextCurrent(ctx);
 					alc.processContext(ctx);
+					if (ctx != null) __contextGeneration++;
 
 					var version:String = ctx != null ? alc.getString(AL.VERSION) : null;
 					var alSoft:Bool = version != null && StringTools.contains(version, "ALSOFT");
@@ -59,12 +79,14 @@ class AudioManager
 							ALC.EVENT_TYPE_DEVICE_REMOVED_SOFT
 						], true);
 						alc.eventCallbackSOFT(device, __deviceEventCallback);
+						__systemEvents = true;
 					}
 				}
 				#end
 			}
 
 			AudioManager.context = context;
+			if (!__systemEvents) setupOutputDeviceRecovery();
 
 			#if (lime_cffi && !macro && lime_openal && (ios || tvos || mac))
 			var timer = new Timer(100);
@@ -182,6 +204,8 @@ class AudioManager
 	public static function shutdown():Void
 	{
 		#if !lime_doc_gen
+		stopOutputDeviceRecovery();
+
 		if (context != null && context.type == OPENAL)
 		{
 			var alc = context.openal;
@@ -206,6 +230,7 @@ class AudioManager
 
 	public static function suspend():Void
 	{
+		// Paused output is not a stall, so videos wait for it instead of playing on
 		__suspended = true;
 
 		#if !lime_doc_gen
@@ -242,6 +267,212 @@ class AudioManager
 			// Let's set a flag and then reopen the device in the update() function that gets
 			// called on the main thread.
 			__audioDeviceChanged = true;
+		}
+		#end
+	}
+
+	private static function closeOpenALContext():Void
+	{
+		#if !lime_doc_gen
+		if (context == null || context.type != OPENAL)
+		{
+			return;
+		}
+
+		var alc = context.openal;
+		var currentContext = alc.getCurrentContext();
+
+		if (currentContext != null)
+		{
+			var device = alc.getContextsDevice(currentContext);
+			alc.makeContextCurrent(null);
+			alc.destroyContext(currentContext);
+
+			if (device != null)
+			{
+				alc.closeDevice(device);
+			}
+		}
+		#end
+	}
+
+	private static function getCurrentOutputDeviceName():String
+	{
+		#if (lime_cffi && !macro && lime_openal)
+		var name = ALC.getString(null, ALC.DEFAULT_ALL_DEVICES_SPECIFIER);
+
+		if (name == null || name.length == 0)
+		{
+			name = ALC.getString(null, ALC.DEFAULT_DEVICE_SPECIFIER);
+		}
+
+		return name;
+		#else
+		return null;
+		#end
+	}
+
+	private static function isOutputDeviceConnected():Bool
+	{
+		#if (lime_cffi && !macro && lime_openal)
+		if (outputDevice == null || !outputDeviceHasDisconnectExt)
+		{
+			return true;
+		}
+
+		var connected = ALC.getIntegerv(outputDevice, ALC.CONNECTED, 1);
+		return connected == null || connected.length == 0 || connected[0] == ALC.TRUE;
+		#else
+		return true;
+		#end
+	}
+
+	private static function openOpenALContext(deviceName:String = null):Bool
+	{
+		#if !lime_doc_gen
+		if (context == null || context.type != OPENAL)
+		{
+			return false;
+		}
+
+		var alc = context.openal;
+		var device = alc.openDevice(deviceName);
+
+		if (device == null && deviceName != null)
+		{
+			device = alc.openDevice();
+		}
+
+		if (device == null)
+		{
+			return false;
+		}
+
+		var currentContext = alc.createContext(device);
+
+		if (currentContext == null)
+		{
+			alc.closeDevice(device);
+			return false;
+		}
+
+		alc.makeContextCurrent(currentContext);
+		alc.processContext(currentContext);
+		__contextGeneration++;
+		return true;
+		#else
+		return false;
+		#end
+	}
+
+	private static function recoverOutputDevice(deviceName:String = null):Void
+	{
+		#if (lime_cffi && !macro && lime_openal)
+		if (outputDeviceRecovering || context == null || context.type != OPENAL)
+		{
+			return;
+		}
+
+		outputDeviceRecovering = true;
+		NativeAudioSource.prepareAudioContextRecovery();
+		NativeVideoSource.prepareAudioContextRecovery();
+		closeOpenALContext();
+
+		if (openOpenALContext(deviceName))
+		{
+			refreshOutputDeviceRecovery();
+			NativeAudioSource.restoreAudioContextRecovery();
+			NativeVideoSource.restoreAudioContextRecovery();
+		}
+
+		outputDeviceRecovering = false;
+		#end
+	}
+
+	private static function refreshOutputDeviceRecovery():Void
+	{
+		#if (lime_cffi && !macro && lime_openal)
+		if (context == null || context.type != OPENAL)
+		{
+			outputDevice = null;
+			outputDeviceHasDisconnectExt = false;
+			outputDeviceName = null;
+			return;
+		}
+
+		var alc = context.openal;
+		var currentContext = alc.getCurrentContext();
+		outputDevice = currentContext != null ? alc.getContextsDevice(currentContext) : null;
+		outputDeviceHasDisconnectExt = outputDevice != null && ALC.isExtensionPresent(outputDevice, "ALC_EXT_disconnect");
+		outputDeviceName = getCurrentOutputDeviceName();
+		#end
+	}
+
+	private static function setupOutputDeviceRecovery():Void
+	{
+		#if (lime_cffi && !macro && lime_openal)
+		stopOutputDeviceRecovery();
+
+		if (context == null || context.type != OPENAL)
+		{
+			return;
+		}
+
+		refreshOutputDeviceRecovery();
+
+		if (!outputDeviceHasDisconnectExt)
+		{
+			return;
+		}
+
+		outputDevicePreferredName = outputDeviceName;
+		// ALC_EXT_disconnect exposes disconnect state, but not device-change events.
+		// Polling is kept as the compatibility fallback for that older API.
+		outputDeviceTimer = new Timer(OUTPUT_DEVICE_POLL_TIME);
+		outputDeviceTimer.run = updateOutputDeviceRecovery;
+		#end
+	}
+
+	private static function stopOutputDeviceRecovery():Void
+	{
+		if (outputDeviceTimer != null)
+		{
+			outputDeviceTimer.stop();
+			outputDeviceTimer = null;
+		}
+
+		outputDevice = null;
+		outputDeviceHasDisconnectExt = false;
+		outputDeviceName = null;
+		outputDevicePreferredName = null;
+		outputDeviceRecovering = false;
+	}
+
+	private static function updateOutputDeviceRecovery():Void
+	{
+		#if (lime_cffi && !macro && lime_openal)
+		if (outputDeviceRecovering || context == null || context.type != OPENAL)
+		{
+			return;
+		}
+
+		if (!isOutputDeviceConnected())
+		{
+			recoverOutputDevice();
+			return;
+		}
+
+		if (outputDevicePreferredName != null && outputDeviceName != outputDevicePreferredName)
+		{
+			var currentName = getCurrentOutputDeviceName();
+
+			if (currentName == outputDevicePreferredName)
+			{
+				recoverOutputDevice(outputDevicePreferredName);
+				return;
+			}
+
+			outputDeviceName = currentName;
 		}
 		#end
 	}

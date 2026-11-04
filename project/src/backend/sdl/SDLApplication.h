@@ -9,6 +9,7 @@
 #include <system/ClipboardEvent.h>
 #include <system/OrientationEvent.h>
 #include <system/SensorEvent.h>
+#include <system/ValuePointer.h>
 #include <ui/DropEvent.h>
 #include <ui/GamepadEvent.h>
 #include <ui/JoystickEvent.h>
@@ -34,6 +35,9 @@ namespace lime {
 			virtual void Init ();
 			virtual int Quit ();
 			virtual void SetFrameRate (double frameRate);
+
+			void SetModalCallbacks (ValuePointer* update, ValuePointer* render, ValuePointer* window, ValuePointer* rethrow);
+			void DeferModalException ();
 			virtual bool Update ();
 
 			void RegisterWindow (SDLWindow *window);

@@ -22,8 +22,9 @@
 #include <hl.h>
 #include <stdarg.h>
 
-#ifndef HL_NATIVE_UCHAR_FUN
-
+#ifdef HL_CONSOLE
+#	include <posix/posix.h>
+#endif
 #ifdef HL_ANDROID
 #	include <android/log.h>
 #	ifndef HL_ANDROID_LOG_TAG
@@ -80,7 +81,7 @@ double utod( const uchar *str, uchar **end ) {
 	}
 	buf[i] = 0;
 	result = strtod(buf,&bend);
-	*end = str + (bend - buf);
+	*end = (uchar*)str + (bend - buf);
 	return result;
 }
 
@@ -101,7 +102,7 @@ int utoi( const uchar *str, uchar **end ) {
 	}
 	buf[i] = 0;
 	result = strtol(buf,&bend,10);
-	*end = str + (bend - buf);
+	*end = (uchar*)str + (bend - buf);
 	return result;
 }
 
@@ -165,6 +166,13 @@ static char *utos( const uchar *s ) {
 }
 
 void uprintf( const uchar *fmt, const uchar *str ) {
+#if defined(HL_XBO) || defined(HL_XBS)
+	int size = ustrlen(fmt) + ustrlen(str) + 1;
+	uchar *buffer = malloc(size * sizeof(uchar));
+	usprintf(buffer, size, fmt, str);
+	OutputDebugStringW((LPCWSTR)buffer);
+	free(buffer);
+#else
 	char *cfmt = utos(fmt);
 	char *cstr = utos(str);
 #ifdef HL_ANDROID
@@ -174,11 +182,8 @@ void uprintf( const uchar *fmt, const uchar *str ) {
 #endif
 	free(cfmt);
 	free(cstr);
-}
-
 #endif
-
-#if !defined(HL_NATIVE_UCHAR_FUN) || defined(HL_WIN)
+}
 
 #ifdef HL_VCC
 #pragma warning(disable:4774)
@@ -208,7 +213,11 @@ sprintf_loop:
 					switch( c ) {
 					case 'd':
 						cfmt[i++] = 0;
-						size = sprintf(tmp,cfmt,va_arg(arglist,int));
+						if( cfmt[i-3] == 'l' ) {
+							size = sprintf(tmp,cfmt,va_arg(arglist,int64));
+						} else {
+							size = sprintf(tmp,cfmt,va_arg(arglist,int));
+						}
 						goto sprintf_add;
 					case 'f':
 						cfmt[i++] = 0;
@@ -223,6 +232,8 @@ sprintf_loop:
 						cfmt[i++] = 0;
 						if( cfmt[i-3] == 'l' )
 							size = sprintf(tmp,cfmt,va_arg(arglist,void*));
+						else if( cfmt[i-3] == 'I' )
+							size = sprintf(tmp,cfmt,va_arg(arglist,size_t));
 						else
 							size = sprintf(tmp,cfmt,va_arg(arglist,int));
 						goto sprintf_add;
@@ -246,6 +257,7 @@ sprintf_loop:
 					case '8':
 					case '9':
 					case 'l':
+					case 'I':
 						break;
 					default:
 						hl_fatal("Unsupported printf format");
@@ -267,4 +279,3 @@ sprintf_add:
 	return 0;
 }
 
-#endif

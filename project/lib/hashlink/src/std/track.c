@@ -59,8 +59,6 @@ typedef struct {
 static bucket_list all_data[_KLAST] = {{0}};
 static hl_mutex *track_lock = NULL;
 
-int hl_internal_capture_stack( void **stack, int size );
-
 static bucket *bucket_find_insert( bucket_list *data, unsigned int hash, void **stack, int count ) {
 	int min = 0, mid;
 	int max = data->bcount;
@@ -130,7 +128,7 @@ static void init_lock() {
 	hl_thread_info *tinf = hl_get_thread();
 	int flags = tinf->flags;
 	tinf->flags &= ~(HL_TRACK_ALLOC<<HL_TREAD_TRACK_SHIFT);
-	track_lock = hl_mutex_alloc(true);
+	track_lock = hl_mutex_alloc(false);
 	hl_add_root(&track_lock);
 	tinf->flags = flags;
 }
@@ -142,7 +140,7 @@ static bucket *fetch_bucket( bucket_kind kind ) {
 	bucket_list *data = &all_data[kind];
 	bucket *b;
 	if( track_lock == NULL ) init_lock();
-	count = hl_internal_capture_stack(tinf->exc_stack_trace,track_depth);
+	count = hl_setup.capture_stack(tinf->exc_stack_trace,track_depth);
 	if( count > max_depth ) max_depth = count;
 	hash = -count;
 	for(i=0;i<count;i++)
@@ -237,10 +235,10 @@ HL_PRIM int hl_track_entry( int id, hl_type **t, int *count, int *info, varray *
 			count_before += cur->bcount;
 			cur++;
 		}
-		b = cur->buckets + (id - count_before);		
+		b = cur->buckets + (id - count_before);
 		prev_id++;
 	} else {
-		int i;		
+		int i;
 		count_before = 0;
 		for(i=0;i<_KLAST;i++) {
 			bucket_list *data = &all_data[i];
@@ -251,7 +249,7 @@ HL_PRIM int hl_track_entry( int id, hl_type **t, int *count, int *info, varray *
 		prev_id = id;
 		cur = &all_data[i];
 		b = cur->buckets;
-	}	
+	}
 	*t = b->t;
 	*count = b->hit_count;
 	*info = b->info;
@@ -276,7 +274,7 @@ HL_PRIM void hl_track_set_bits( int flags, bool thread ) {
 #	ifdef HL_TRACK_ENABLE
 	if( thread ) {
 		hl_thread_info *t = hl_get_thread();
-		if( t ) t->flags = (t->flags & ~(HL_TRACK_MASK<<HL_TREAD_TRACK_SHIFT)) | ((flags & HL_TRACK_MASK) << HL_TREAD_TRACK_SHIFT);	
+		if( t ) t->flags = (t->flags & ~(HL_TRACK_MASK<<HL_TREAD_TRACK_SHIFT)) | ((flags & HL_TRACK_MASK) << HL_TREAD_TRACK_SHIFT);
 	} else {
 		hl_track.flags = (hl_track.flags & ~HL_TRACK_MASK) | (flags & HL_TRACK_MASK);
 	}

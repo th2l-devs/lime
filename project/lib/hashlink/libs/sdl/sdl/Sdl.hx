@@ -38,6 +38,10 @@ class Sdl {
 		glOptions(major, minor, depth, stencil, flags, samples);
 	}
 
+	public static function setGLVersion( major : Int, minor : Int) {
+		setGLOptions(major, minor);
+	}
+
 	public static function setHint(name:String, value:String) {
 		return @:privateAccess hintValue(name.toUtf8(), value.toUtf8());
 	}
@@ -87,7 +91,7 @@ class Sdl {
 	}
 
 	public static function getScreenWidth(?win : sdl.Window) : Int {
-		return 
+		return
 			if(win == null)
 				get_screen_width();
 			else
@@ -110,9 +114,12 @@ class Sdl {
 	public static function message( title : String, text : String, error = false ) {
 		@:privateAccess messageBox(title.toUtf8(), text.toUtf8(), error);
 	}
-	
+
 	public static function getDisplayModes(display : Window.DisplayHandle) : Array<ScreenMode> {
-		return [ for(m in get_display_modes(display)) m ];
+		var modes = get_display_modes(display);
+		if(modes == null)
+			return [];
+		return [ for(m in modes) m ];
 	}
 
 	public static function getCurrentDisplayMode(display : Window.DisplayHandle, registry : Bool = false) : ScreenMode {
@@ -120,10 +127,13 @@ class Sdl {
 	}
 
 	public static function getDisplays() : Array<Display> {
+		var displays = get_displays();
+		if(displays == null)
+			return [];
 		var i = 0;
 		return [ for(d in get_displays() ) @:privateAccess { handle: d.handle, name: '${String.fromUTF8(d.name)} (${++i})', left: d.left, top: d.top, right: d.right, bottom: d.bottom } ];
 	}
-	
+
 	public static function getDevices() {
 		var a = [];
 		var arr = get_devices();
@@ -141,7 +151,7 @@ class Sdl {
 	public static function setRelativeMouseMode( enable : Bool ) : Int {
 		return 0;
 	}
-	
+
 	public static function setClipboardText( text : String ) : Bool {
 		if( text == null )
 			return false;
@@ -150,6 +160,14 @@ class Sdl {
 
 	public static function getClipboardText() : String {
 		var t = _getClipboardText();
+		if( t == null )
+			return null;
+		else
+			return @:privateAccess String.fromUTF8(t);
+	}
+
+	public static function getError() : String {
+		var t = _getError();
 		if( t == null )
 			return null;
 		else
@@ -171,7 +189,7 @@ class Sdl {
 		return 0;
 	}
 
-	@:hlNative("?sdl", "get_screen_height_of_display")
+	@:hlNative("?sdl", "get_screen_height_of_window")
 	static function get_screen_height_of_window(win: sdl.Window.WinPtr) : Int {
 		return 0;
 	}
@@ -193,12 +211,6 @@ class Sdl {
 		return null;
 	}
 
-
-	@:hlNative("?sdl", "get_desktop_display_mode")
-	static function get_desktop_display_mode(displayId : Int) : Dynamic {
-		return null;
-	}
-
 	@:hlNative("?sdl", "get_displays")
 	static function get_displays() : hl.NativeArray<Dynamic> {
 		return null;
@@ -206,6 +218,19 @@ class Sdl {
 
 	static function get_devices() : hl.NativeArray<hl.Bytes> {
 		return null;
+	}
+
+	public static function getRelativeMouseMode() : Bool {
+		return false;
+	}
+
+	public static function warpMouseGlobal( x : Int, y : Int ) : Int {
+		return 0;
+	}
+
+	@:hlNative("?sdl", "get_global_mouse_state")
+	public static function getGlobalMouseState( x : hl.Ref<Int>, y : hl.Ref<Int> ) : Int {
+		return 0;
 	}
 
 	static function detect_keyboard_layout() : hl.Bytes {
@@ -225,10 +250,36 @@ class Sdl {
 	private static function _getClipboardText() : hl.Bytes {
 		return null;
 	}
+
+	@:hlNative("?sdl", "set_drag_and_drop_enabled")
+	public static function setDragAndDropEnabled( v : Bool ): Void {
+	}
+
+	@:hlNative("?sdl", "get_drag_and_drop_enabled")
+	public static function getDragAndDropEnabled(): Bool {
+		return false;
+	}
+
+	@:hlNative("?sdl", "get_error")
+	private static function _getError() : hl.Bytes {
+		return null;
+	}
+
+	//
+	// SDL3 Joystick API
+	//
+	public static function getJoysticks() : Array<Int> {
+		var ids = _getJoysticks();
+		return ids == null ? [] : [for( id in ids ) id];
+	}
+
+	@:hlNative("?sdl", "get_joysticks")
+	private static function _getJoysticks() : hl.NativeArray<Int> {
+		return null;
+	}
 }
 
-@:enum
-abstract SDLHint(String) from String to String {
+enum abstract SDLHint(String) from String to String {
 
 	var SDL_HINT_FRAMEBUFFER_ACCELERATION =                 "SDL_FRAMEBUFFER_ACCELERATION";
 	var SDL_HINT_RENDER_DRIVER =                            "SDL_RENDER_DRIVER";
@@ -244,7 +295,7 @@ abstract SDLHint(String) from String to String {
 	var SDL_HINT_VIDEO_X11_NET_WM_PING =                    "SDL_VIDEO_X11_NET_WM_PING";
 	var SDL_HINT_WINDOW_FRAME_USABLE_WHILE_CURSOR_HIDDEN =  "SDL_WINDOW_FRAME_USABLE_WHILE_CURSOR_HIDDEN";
 	var SDL_HINT_WINDOWS_ENABLE_MESSAGELOOP =               "SDL_WINDOWS_ENABLE_MESSAGELOOP";
-	var SDL_HINT_GRAB_KEYBOARD =                            "SDL_GRAB_KEYBOARD";
+	var SDL_HINT_GRAB_KEYBOARD =                            "SDL_GRAB_KEYBOARD"; // SDL2 compat
 	var SDL_HINT_MOUSE_RELATIVE_MODE_WARP =                 "SDL_MOUSE_RELATIVE_MODE_WARP";
 	var SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS =             "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS";
 	var SDL_HINT_IDLE_TIMER_DISABLED =                      "SDL_IOS_IDLE_TIMER_DISABLED";

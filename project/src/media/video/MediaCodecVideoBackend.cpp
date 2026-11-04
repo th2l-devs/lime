@@ -17,15 +17,19 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <math.h>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 
 #ifndef LIME_VIDEO_STANDALONE
+#include <jni.h>
+#include <SDL3/SDL.h>
 #include <system/System.h>
 #endif
 
@@ -56,6 +60,7 @@
 
 
 struct AHardwareBuffer;
+struct AMediaDataSource;
 
 
 namespace lime {
@@ -126,7 +131,11 @@ namespace lime {
 		media_status_t (*AMediaExtractor_seekTo) (AMediaExtractor*, int64_t, SeekMode);
 		media_status_t (*AMediaExtractor_selectTrack) (AMediaExtractor*, size_t);
 		media_status_t (*AMediaExtractor_setDataSource) (AMediaExtractor*, const char*);
+		media_status_t (*AMediaExtractor_setDataSourceCustom) (AMediaExtractor*, AMediaDataSource*);
 		media_status_t (*AMediaExtractor_setDataSourceFd) (AMediaExtractor*, int, off64_t, off64_t);
+		void (*AMediaDataSource_close) (AMediaDataSource*);
+		void (*AMediaDataSource_delete) (AMediaDataSource*);
+		AMediaDataSource* (*AMediaDataSource_newUri) (const char*, int, const char* const*);
 		media_status_t (*AMediaFormat_delete) (AMediaFormat*);
 		bool (*AMediaFormat_getBuffer) (AMediaFormat*, const char*, void**, size_t*);
 		bool (*AMediaFormat_getFloat) (AMediaFormat*, const char*, float*);
@@ -134,6 +143,7 @@ namespace lime {
 		bool (*AMediaFormat_getInt64) (AMediaFormat*, const char*, int64_t*);
 		bool (*AMediaFormat_getRect) (AMediaFormat*, const char*, int32_t*, int32_t*, int32_t*, int32_t*);
 		bool (*AMediaFormat_getString) (AMediaFormat*, const char*, const char**);
+		void (*AMediaFormat_setInt32) (AMediaFormat*, const char*, int32_t);
 
 	};
 
@@ -221,11 +231,17 @@ namespace lime {
 		COLOR_STANDARD_BT601_PAL = 2,
 		COLOR_STANDARD_BT601_NTSC = 4,
 		COLOR_STANDARD_BT2020 = 6,
+		COLOR_TRANSFER_SDR_VIDEO = 3,
+		COLOR_TRANSFER_ST2084 = 6,
+		COLOR_TRANSFER_HLG = 7,
 		MEDIA_IMAGE_SIZE = 80,
 		MEDIA_IMAGE_TYPE_YUV = 1,
 		MEDIA_IMAGE2_SIZE = 104,
 		PCM_ENCODING_16BIT = 2,
-		PCM_ENCODING_FLOAT = 4
+		PCM_ENCODING_8BIT = 3,
+		PCM_ENCODING_FLOAT = 4,
+		PCM_ENCODING_24BIT_PACKED = 21,
+		PCM_ENCODING_32BIT = 22
 
 	};
 
@@ -265,6 +281,21 @@ namespace lime {
 	// Decoding gives up after about 3 seconds without progress
 	static const int MAX_IDLE_WAITS = 300;
 	static const int64_t OUTPUT_TIMEOUT_US = 10000;
+
+	// Buffer indices are small, so a larger one is an error code, such as the
+	// system reclaiming the codec for another app
+	static const ssize_t MAX_BUFFER_INDEX = 1000;
+
+	// A codec that fails is replaced this many times in a row, such as when
+	// the system reclaims it while the app is in the background
+	static const int MAX_CODEC_RESTARTS = 3;
+
+	// How long a seek waits for reads in progress before giving up on them, as
+	// reads from a source that is still sending finish well within it
+	static const int SEEK_WAIT_MS = 250;
+
+	// How long decoding waits at a time for a connection being made again
+	static const int CONNECT_WAIT_MS = 50;
 
 	static const char* COPY_FRAGMENT_SHADER =
 		"#extension GL_OES_EGL_image_external : require\n"
@@ -370,6 +401,13 @@ namespace lime {
 			LIME_MEDIANDK_OPTIONAL (library, AImageReader_newWithUsage);
 			LIME_MEDIANDK_OPTIONAL (library, AImageReader_setImageListener);
 			LIME_MEDIANDK_OPTIONAL (library, AMediaFormat_getRect);
+			LIME_MEDIANDK_OPTIONAL (library, AMediaFormat_setInt32);
+
+			// API level 28 and 29
+			LIME_MEDIANDK_OPTIONAL (library, AMediaDataSource_close);
+			LIME_MEDIANDK_OPTIONAL (library, AMediaDataSource_delete);
+			LIME_MEDIANDK_OPTIONAL (library, AMediaDataSource_newUri);
+			LIME_MEDIANDK_OPTIONAL (library, AMediaExtractor_setDataSourceCustom);
 
 			void* android = dlopen ("libandroid.so", RTLD_NOW | RTLD_LOCAL);
 			if (android) LIME_MEDIANDK_OPTIONAL (android, AHardwareBuffer_describe);
@@ -413,6 +451,129 @@ namespace lime {
 		return shader;
 
 	}
+
+
+	static void ConvertSamples (const uint8_t* data, size_t count, int encoding, std::vector<short>* out) {
+
+		// Decoders that cannot give 16-bit samples give these instead
+		out->resize (count);
+		short* samples = out->data ();
+
+		for (size_t i = 0; i < count; i++) {
+
+			switch (encoding) {
+
+				case PCM_ENCODING_FLOAT: {
+
+					float value;
+					memcpy (&value, data + i * 4, 4);
+					value *= 32768.0f;
+					samples[i] = value >= 32767.0f ? 32767 : (value <= -32768.0f ? -32768 : (short)value);
+					break;
+
+				}
+
+				case PCM_ENCODING_8BIT: samples[i] = (short)((data[i] - 128) << 8); break;
+				case PCM_ENCODING_24BIT_PACKED: samples[i] = (short)(data[i * 3 + 1] | (data[i * 3 + 2] << 8)); break;
+
+				case PCM_ENCODING_32BIT: {
+
+					int32_t value;
+					memcpy (&value, data + i * 4, 4);
+					samples[i] = (short)(value >> 16);
+					break;
+
+				}
+
+				default: samples[i] = 0; break;
+
+			}
+
+		}
+
+	}
+
+
+	static int GetSampleBytes (int encoding) {
+
+		switch (encoding) {
+
+			case PCM_ENCODING_16BIT: return 2;
+			case PCM_ENCODING_8BIT: return 1;
+			case PCM_ENCODING_24BIT_PACKED: return 3;
+			case PCM_ENCODING_FLOAT: case PCM_ENCODING_32BIT: return 4;
+			default: return 0;
+
+		}
+
+	}
+
+
+	#ifndef LIME_VIDEO_STANDALONE
+	static int OpenContentURI (const char* uri) {
+
+		// A content URI, as file pickers and the media store give, is opened
+		// through the content resolver, which hands out a file descriptor
+		JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv ();
+		jobject activity = env ? (jobject)SDL_GetAndroidActivity () : NULL;
+		if (!activity) return -1;
+
+		int fd = -1;
+
+		if (env->PushLocalFrame (16) == 0) {
+
+			jclass contextClass = env->GetObjectClass (activity);
+			jmethodID getContentResolver = env->GetMethodID (contextClass, "getContentResolver", "()Landroid/content/ContentResolver;");
+			jobject resolver = getContentResolver ? env->CallObjectMethod (activity, getContentResolver) : NULL;
+			jclass uriClass = env->FindClass ("android/net/Uri");
+			jmethodID parse = uriClass ? env->GetStaticMethodID (uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;") : NULL;
+			jobject uriObject = parse ? env->CallStaticObjectMethod (uriClass, parse, env->NewStringUTF (uri)) : NULL;
+
+			if (env->ExceptionCheck ()) {
+
+				env->ExceptionClear ();
+				resolver = NULL;
+
+			}
+
+			if (resolver && uriObject) {
+
+				jmethodID openFileDescriptor = env->GetMethodID (env->GetObjectClass (resolver), "openFileDescriptor", "(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;");
+				jobject descriptor = openFileDescriptor ? env->CallObjectMethod (resolver, openFileDescriptor, uriObject, env->NewStringUTF ("r")) : NULL;
+
+				if (env->ExceptionCheck ()) {
+
+					// Such as a URI that does not exist or is not permitted
+					env->ExceptionClear ();
+					descriptor = NULL;
+
+				}
+
+				if (descriptor) {
+
+					jclass descriptorClass = env->GetObjectClass (descriptor);
+					jmethodID detachFd = env->GetMethodID (descriptorClass, "detachFd", "()I");
+					jmethodID close = env->GetMethodID (descriptorClass, "close", "()V");
+
+					if (detachFd) fd = env->CallIntMethod (descriptor, detachFd);
+					if (env->ExceptionCheck ()) { env->ExceptionClear (); fd = -1; }
+					if (close) env->CallVoidMethod (descriptor, close);
+					if (env->ExceptionCheck ()) env->ExceptionClear ();
+
+				}
+
+			}
+
+			if (env->ExceptionCheck ()) env->ExceptionClear ();
+			env->PopLocalFrame (NULL);
+
+		}
+
+		env->DeleteLocalRef (activity);
+		return fd;
+
+	}
+	#endif
 
 
 	static AMediaCodec* CreateDecoder (AMediaFormat* format, bool hardware, ANativeWindow* surface) {
@@ -557,6 +718,26 @@ namespace lime {
 	}
 
 
+	// GL objects of a backend closed away from the GL thread, deleted the next
+	// time a decoder reads a texture frame where their context is current
+	struct MediaCodecOrphan {
+
+		EGLContext context;
+		GLuint copyBuffer;
+		GLuint copyFramebuffer;
+		GLuint copyProgram;
+		GLuint copyTexture;
+		GLuint copyVertexArray;
+		GLuint imageTexture;
+
+	};
+
+	// Never destroyed, as exiting runs static destructors while threads can
+	// still be closing videos
+	static std::mutex* orphanMutex = new std::mutex ();
+	static std::vector<MediaCodecOrphan>* orphans = new std::vector<MediaCodecOrphan> ();
+
+
 	static void RestoreGLState (const SavedGLState* state, bool gles3) {
 
 		glBindFramebuffer (GL_FRAMEBUFFER, state->framebuffer);
@@ -644,6 +825,23 @@ namespace lime {
 	}
 
 
+	static int GetSystemVersion () {
+
+		// The API level, which the NDK only gives from Android 10
+		static int version = -1;
+
+		if (version < 0) {
+
+			char value[PROP_VALUE_MAX] = {};
+			version = __system_property_get ("ro.build.version.sdk", value) > 0 ? atoi (value) : 0;
+
+		}
+
+		return version;
+
+	}
+
+
 	static AMediaFormat* SelectTrack (AMediaExtractor* extractor, const char* type, size_t* track) {
 
 		size_t count = ndk.AMediaExtractor_getTrackCount (extractor);
@@ -674,6 +872,67 @@ namespace lime {
 	}
 
 
+	// Whether a seek waits for the streams, and which of them are reading,
+	// under the mutex, so a read does not start while a seek waits
+	struct MediaCodecReads {
+
+		MediaCodecReads () : seeking (false) {}
+
+		std::condition_variable condition;
+		std::mutex mutex;
+		std::atomic<bool> seeking;
+
+	};
+
+
+	// Connecting to a server, which Android cannot cancel, so it happens on a
+	// thread of its own that seeking and closing can leave behind
+	struct MediaCodecConnection {
+
+		MediaCodecConnection () : abandoned (false), dataSource (NULL), done (false) {}
+
+		bool abandoned;
+		std::condition_variable condition;
+		AMediaDataSource* dataSource;
+		bool done;
+		std::mutex mutex;
+
+	};
+
+
+	static std::shared_ptr<MediaCodecConnection> Connect (const std::string& path) {
+
+		std::shared_ptr<MediaCodecConnection> connection = std::make_shared<MediaCodecConnection> ();
+
+		std::thread ([connection, path] {
+
+			#ifndef LIME_VIDEO_STANDALONE
+			// The data source reads through Java, so the thread joins the Java VM
+			SDL_GetAndroidJNIEnv ();
+			#endif
+
+			AMediaDataSource* dataSource = ndk.AMediaDataSource_newUri (path.c_str (), 0, NULL);
+
+			std::lock_guard<std::mutex> lock (connection->mutex);
+
+			if (connection->abandoned && dataSource) {
+
+				ndk.AMediaDataSource_delete (dataSource);
+				dataSource = NULL;
+
+			}
+
+			connection->dataSource = dataSource;
+			connection->done = true;
+			connection->condition.notify_all ();
+
+		}).detach ();
+
+		return connection;
+
+	}
+
+
 	// One stream's extractor and decoder, which no other thread touches while
 	// it decodes
 	class MediaCodecStream {
@@ -683,20 +942,38 @@ namespace lime {
 
 			MediaCodecStream ();
 
+			bool BeginRead ();
 			void Close ();
+			void EndRead ();
+			void GiveUp ();
 			bool Prime ();
 			VideoDecodeResult Read (bool* formatChanged);
 			void Release ();
-			bool Seek (int64_t position);
+			bool Seek (int64_t position, bool later);
+			void SetDataSource (AMediaDataSource* value);
 
+			// Reading, under the reads mutex
+			bool busy;
+
+			std::atomic<bool> cancelled;
 			AMediaCodec* codec;
+			std::shared_ptr<MediaCodecConnection> connection;
+			AMediaDataSource* dataSource;
 			bool ended;
 			AMediaExtractor* extractor;
 			ssize_t index;
 			AMediaCodecBufferInfo info;
 			bool inputEnded;
+			bool inputError;
 			std::atomic<bool> interrupted;
 			bool pending;
+			MediaCodecReads* reads;
+
+			// Given up by a seek, so the stream connects again
+			std::atomic<bool> reopen;
+
+			// Where the extractor seeks before reading next, or -1
+			int64_t seekPosition;
 
 		private:
 
@@ -708,14 +985,35 @@ namespace lime {
 
 	MediaCodecStream::MediaCodecStream () {
 
+		busy = false;
+		cancelled = false;
 		codec = NULL;
+		dataSource = NULL;
 		ended = false;
 		extractor = NULL;
 		index = -1;
 		inputEnded = false;
+		inputError = false;
 		interrupted = false;
 		memset (&info, 0, sizeof (info));
 		pending = false;
+		reads = NULL;
+		reopen = false;
+		seekPosition = -1;
+
+	}
+
+
+	bool MediaCodecStream::BeginRead () {
+
+		// Reading a URL can wait on a stalled network source, which a seek gives
+		// up, and reads do not start while a seek waits
+		std::lock_guard<std::mutex> lock (reads->mutex);
+		if (reads->seeking) return false;
+
+		busy = true;
+		cancelled = false;
+		return true;
 
 	}
 
@@ -723,6 +1021,22 @@ namespace lime {
 	void MediaCodecStream::Close () {
 
 		Release ();
+
+		if (connection) {
+
+			std::lock_guard<std::mutex> lock (connection->mutex);
+			connection->abandoned = true;
+
+			if (connection->dataSource) {
+
+				ndk.AMediaDataSource_delete (connection->dataSource);
+				connection->dataSource = NULL;
+
+			}
+
+		}
+
+		connection.reset ();
 
 		if (codec) {
 
@@ -739,9 +1053,36 @@ namespace lime {
 
 		}
 
+		// The extractor reads from the data source until it is deleted
+		SetDataSource (NULL);
+
+		cancelled = false;
 		ended = false;
 		inputEnded = false;
+		inputError = false;
 		interrupted = false;
+		reopen = false;
+		seekPosition = -1;
+
+	}
+
+
+	void MediaCodecStream::EndRead () {
+
+		std::lock_guard<std::mutex> lock (reads->mutex);
+		busy = false;
+		reads->condition.notify_all ();
+
+	}
+
+
+	void MediaCodecStream::GiveUp () {
+
+		// With the reads mutex held. Closing the data source makes a read waiting
+		// on a stalled network source fail, and the stream connects again.
+		cancelled = true;
+		reopen = true;
+		if (dataSource) ndk.AMediaDataSource_close (dataSource);
 
 	}
 
@@ -763,12 +1104,38 @@ namespace lime {
 		ssize_t inputIndex = ndk.AMediaCodec_dequeueInputBuffer (codec, 0);
 		if (inputIndex < 0) return false;
 
+		if (inputIndex >= MAX_BUFFER_INDEX) {
+
+			inputError = true;
+			return false;
+
+		}
+
 		size_t capacity = 0;
 		uint8_t* buffer = ndk.AMediaCodec_getInputBuffer (codec, inputIndex, &capacity);
+
+		// The input buffer goes back to the codec when the seek flushes it
+		if (!BeginRead ()) {
+
+			inputError = true;
+			return false;
+
+		}
+
 		ssize_t size = buffer ? ndk.AMediaExtractor_readSampleData (extractor, buffer, capacity) : -1;
 		int64_t time = ndk.AMediaExtractor_getSampleTime (extractor);
+		EndRead ();
 
-		if (size < 0 || time < 0) {
+		if (cancelled || (time >= 0 && size < 0)) {
+
+			// A sample that is there but cannot be read, such as one larger than
+			// the input buffer or one lost to a network error, is not the end
+			inputError = true;
+			return false;
+
+		}
+
+		if (time < 0) {
 
 			ndk.AMediaCodec_queueInputBuffer (codec, inputIndex, 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
 			inputEnded = true;
@@ -776,7 +1143,19 @@ namespace lime {
 		} else {
 
 			ndk.AMediaCodec_queueInputBuffer (codec, inputIndex, 0, size, time, 0);
-			ndk.AMediaExtractor_advance (extractor);
+
+			// Advancing reads the next sample
+			if (BeginRead ()) {
+
+				ndk.AMediaExtractor_advance (extractor);
+				EndRead ();
+				if (cancelled) inputError = true;
+
+			} else {
+
+				inputError = true;
+
+			}
 
 		}
 
@@ -797,17 +1176,39 @@ namespace lime {
 		Release ();
 
 		if (ended) return VIDEO_DECODE_END;
+		if (!extractor) return reopen ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
+
+		if (seekPosition >= 0) {
+
+			if (!BeginRead ()) return VIDEO_DECODE_AGAIN;
+			media_status_t status = ndk.AMediaExtractor_seekTo (extractor, seekPosition, AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC);
+			EndRead ();
+
+			if (cancelled) return VIDEO_DECODE_AGAIN;
+
+			seekPosition = -1;
+			if (status != AMEDIA_OK) return VIDEO_DECODE_ERROR;
+
+		}
 
 		int idle = 0;
 
 		while (!interrupted) {
 
 			bool queued = QueueInput ();
+
+			// A seek gave up on this read, or it waits for one, and reading
+			// carries on after it
+			if (inputError) return cancelled || reads->seeking ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
 			if (queued) idle = 0;
 
 			ssize_t result = ndk.AMediaCodec_dequeueOutputBuffer (codec, &info, queued ? 0 : OUTPUT_TIMEOUT_US);
 
-			if (result >= 0) {
+			if (result >= MAX_BUFFER_INDEX) {
+
+				return VIDEO_DECODE_ERROR;
+
+			} else if (result >= 0) {
 
 				if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) ended = true;
 
@@ -857,17 +1258,48 @@ namespace lime {
 	}
 
 
-	bool MediaCodecStream::Seek (int64_t position) {
+	bool MediaCodecStream::Seek (int64_t position, bool later) {
 
 		Release ();
 
-		bool success = (ndk.AMediaExtractor_seekTo (extractor, position, AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC) == AMEDIA_OK);
+		// Seeking a URL reads from the network, so the extractor seeks later,
+		// on the thread that decodes, where a seek can give up on it
+		bool success = true;
+
+		if (later || !extractor) {
+
+			seekPosition = position;
+
+		} else {
+
+			seekPosition = -1;
+			success = (ndk.AMediaExtractor_seekTo (extractor, position, AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC) == AMEDIA_OK);
+
+		}
+
 		success = (ndk.AMediaCodec_flush (codec) == AMEDIA_OK) && success;
 
 		ended = false;
 		inputEnded = false;
+		inputError = false;
 
 		return success;
+
+	}
+
+
+	void MediaCodecStream::SetDataSource (AMediaDataSource* value) {
+
+		AMediaDataSource* previous = NULL;
+
+		{
+			// Interrupt and PrepareSeek close it from another thread
+			std::lock_guard<std::mutex> lock (reads->mutex);
+			previous = dataSource;
+			dataSource = value;
+		}
+
+		if (previous) ndk.AMediaDataSource_delete (previous);
 
 	}
 
@@ -887,7 +1319,9 @@ namespace lime {
 			virtual void Interrupt ();
 			virtual unsigned int LockTexture (VideoTextureFrame* frame);
 			virtual bool Open (const char* path, bool hardwareDecoding, VideoStreamInfo* info);
+			virtual void PrepareSeek ();
 			virtual void ReleaseTextureFrame (VideoTextureFrame* frame);
+			virtual void ReleaseOrphans ();
 			virtual void ReleaseTextures ();
 			virtual bool Seek (double time);
 			virtual void SetTextureOutput (bool enabled);
@@ -896,7 +1330,7 @@ namespace lime {
 		private:
 
 			AImage* AcquireImage ();
-			AMediaExtractor* CreateExtractor ();
+			AMediaExtractor* CreateExtractor (AMediaDataSource** dataSource);
 			ANativeWindow* CreateImageReader (int width, int height);
 			bool CreateTextures ();
 			AMediaCodec* CreateVideoDecoder (bool hardware, bool surface);
@@ -908,18 +1342,29 @@ namespace lime {
 			bool ReadPlaneLayout (AMediaFormat* format, int width, int height);
 			bool ReadVideoFormat ();
 			void ReleaseImage (AImage* image, int fence);
+			VideoDecodeResult ReopenStream (MediaCodecStream* stream, size_t track);
 			bool ReplaceVideoCodec (bool hardware, bool surface, int64_t position);
+			bool RestartAudio ();
 			bool RestartVideo ();
 
 			static void OnImageAvailable (void* context, AImageReader* reader);
 
 			MediaCodecStream audio;
 			int audioChannels;
-			bool audioFloat;
+			VideoAudioConverter audioConverter;
+			int audioEncoding;
+			int64_t audioPosition;
+			int audioRestarts;
 			std::vector<short> audioSamples;
 			int audioSampleRate;
+			int64_t audioSkipTime;
 			int audioSourceChannels;
+			int audioSourceRate;
+			int64_t audioTime;
+			size_t audioTrack;
+			bool audioTrackFound;
 			VideoColorMatrix colorMatrix;
+			VideoColorTransfer colorTransfer;
 			GLuint copyBuffer;
 			GLuint copyFramebuffer;
 			GLuint copyProgram;
@@ -944,7 +1389,11 @@ namespace lime {
 			GLuint imageTexture;
 			ANativeWindow* imageWindow;
 			bool nativeFences;
+			bool network;
 			std::string path;
+			double pixelAspectRatio;
+			MediaCodecReads reads;
+			int rotation;
 			EGLContext textureContext;
 			bool textureGLES3;
 			std::atomic<bool> textureOutput;
@@ -956,10 +1405,12 @@ namespace lime {
 			MediaCodecStream video;
 			AMediaFormat* videoFormat;
 			int64_t videoPosition;
+			int videoRestarts;
 			int64_t videoSkipTime;
 			bool videoSurface;
 			int64_t videoTime;
 			size_t videoTrack;
+			bool videoTrackFound;
 			size_t yOffset;
 			int yStride;
 
@@ -969,11 +1420,21 @@ namespace lime {
 
 	MediaCodecVideoBackend::MediaCodecVideoBackend () {
 
+		audio.reads = &reads;
+		video.reads = &reads;
 		audioChannels = 0;
-		audioFloat = false;
+		audioEncoding = PCM_ENCODING_16BIT;
+		audioPosition = 0;
+		audioRestarts = 0;
 		audioSampleRate = 0;
+		audioSkipTime = INT64_MIN;
 		audioSourceChannels = 0;
+		audioSourceRate = 0;
+		audioTime = INT64_MIN;
+		audioTrack = 0;
+		audioTrackFound = false;
 		colorMatrix = VIDEO_COLOR_MATRIX_BT709;
+		colorTransfer = VIDEO_COLOR_TRANSFER_SDR;
 		copyBuffer = 0;
 		copyFramebuffer = 0;
 		copyProgram = 0;
@@ -996,6 +1457,9 @@ namespace lime {
 		imageTexture = 0;
 		imageWindow = NULL;
 		nativeFences = false;
+		network = false;
+		pixelAspectRatio = 0;
+		rotation = 0;
 		textureContext = EGL_NO_CONTEXT;
 		textureGLES3 = false;
 		textureOutput = false;
@@ -1006,10 +1470,12 @@ namespace lime {
 		vOffset = 0;
 		videoFormat = NULL;
 		videoPosition = 0;
+		videoRestarts = 0;
 		videoSkipTime = INT64_MIN;
 		videoSurface = false;
 		videoTime = INT64_MIN;
 		videoTrack = 0;
+		videoTrackFound = false;
 		yOffset = 0;
 		yStride = 0;
 
@@ -1085,6 +1551,21 @@ namespace lime {
 
 	void MediaCodecVideoBackend::Close () {
 
+		// GL objects still held were left by closing away from the GL thread, as
+		// closing there releases them first
+		if (textureContext != EGL_NO_CONTEXT && (copyBuffer || copyFramebuffer || copyProgram || copyTexture || copyVertexArray || imageTexture)) {
+
+			MediaCodecOrphan orphan = { textureContext, copyBuffer, copyFramebuffer, copyProgram, copyTexture, copyVertexArray, imageTexture };
+
+			{
+				std::lock_guard<std::mutex> lock (*orphanMutex);
+				orphans->push_back (orphan);
+			}
+
+			ForgetTextures ();
+
+		}
+
 		video.Close ();
 		audio.Close ();
 
@@ -1106,31 +1587,96 @@ namespace lime {
 		}
 
 		audioChannels = 0;
+		audioConverter.Reset ();
+		audioPosition = 0;
+		audioRestarts = 0;
 		audioSampleRate = 0;
+		audioSkipTime = INT64_MIN;
 		audioSourceChannels = 0;
+		audioSourceRate = 0;
+		audioTime = INT64_MIN;
+		audioTrackFound = false;
 		duration = 0;
 		frameRate = 0;
 		hardwareActive = false;
 		imagesHeld = 0;
+		network = false;
+		pixelAspectRatio = 0;
+		reads.seeking = false;
+		rotation = 0;
 		texturesFailed = false;
 		videoPosition = 0;
+		videoRestarts = 0;
 		videoSkipTime = INT64_MIN;
 		videoSurface = false;
 		videoTime = INT64_MIN;
+		videoTrackFound = false;
 
 	}
 
 
-	AMediaExtractor* MediaCodecVideoBackend::CreateExtractor () {
+	AMediaExtractor* MediaCodecVideoBackend::CreateExtractor (AMediaDataSource** dataSource) {
+
+		*dataSource = NULL;
 
 		AMediaExtractor* extractor = ndk.AMediaExtractor_new ();
 		if (!extractor) return NULL;
 
 		media_status_t status = AMEDIA_ERROR_UNKNOWN;
+		bool url = path.find ("://") != std::string::npos;
 
-		if (path.find ("://") != std::string::npos) {
+		#ifndef LIME_VIDEO_STANDALONE
+		// The extractor opens URLs through Java, so a thread that opens one, such
+		// as one VideoSource.loadFromFile uses, joins the Java VM, which SDL
+		// does for any thread that asks for its environment
+		if (url) SDL_GetAndroidJNIEnv ();
+		#endif
 
-			status = ndk.AMediaExtractor_setDataSource (extractor, path.c_str ());
+		#ifndef LIME_VIDEO_STANDALONE
+		if (path.compare (0, 10, "content://") == 0) {
+
+			int fd = OpenContentURI (path.c_str ());
+
+			if (fd >= 0) {
+
+				// A provider that streams through a pipe has no length
+				struct stat fileInfo;
+				off64_t length = (fstat (fd, &fileInfo) == 0 && fileInfo.st_size > 0) ? fileInfo.st_size : INT64_MAX;
+				status = ndk.AMediaExtractor_setDataSourceFd (extractor, fd, 0, length);
+				::close (fd);
+
+			}
+
+		} else
+		#endif
+		if (url) {
+
+			// From Android 10, a URL is read through a data source, which
+			// Interrupt can close, so a stream waiting on a stalled network
+			// returns rather than waiting for the connection to time out
+			if (ndk.AMediaDataSource_newUri && ndk.AMediaDataSource_close && ndk.AMediaDataSource_delete && ndk.AMediaExtractor_setDataSourceCustom) {
+
+				*dataSource = ndk.AMediaDataSource_newUri (path.c_str (), 0, NULL);
+
+				if (*dataSource) {
+
+					status = ndk.AMediaExtractor_setDataSourceCustom (extractor, *dataSource);
+
+					if (status != AMEDIA_OK) {
+
+						ndk.AMediaExtractor_delete (extractor);
+						ndk.AMediaDataSource_delete (*dataSource);
+						*dataSource = NULL;
+						extractor = ndk.AMediaExtractor_new ();
+						if (!extractor) return NULL;
+
+					}
+
+				}
+
+			}
+
+			if (status != AMEDIA_OK) status = ndk.AMediaExtractor_setDataSource (extractor, path.c_str ());
 
 		} else {
 
@@ -1184,6 +1730,14 @@ namespace lime {
 		if (status != AMEDIA_OK) {
 
 			ndk.AMediaExtractor_delete (extractor);
+
+			if (*dataSource) {
+
+				ndk.AMediaDataSource_delete (*dataSource);
+				*dataSource = NULL;
+
+			}
+
 			return NULL;
 
 		}
@@ -1298,93 +1852,158 @@ namespace lime {
 
 	AMediaCodec* MediaCodecVideoBackend::CreateVideoDecoder (bool hardware, bool surface) {
 
-		// Configuring with a surface stores it in the format, so each codec gets
-		// its own copy of the track format
-		AMediaFormat* format = ndk.AMediaExtractor_getTrackFormat (video.extractor, videoTrack);
-		if (!format) return NULL;
+		// HDR video is tone mapped to standard range, in 8-bit frames, by
+		// decoders that can from Android 13, rather than shown washed out. A
+		// decoder that refuses the request is configured without it.
+		for (int attempt = 0; attempt < 2; attempt++) {
 
-		AMediaCodec* codec = CreateDecoder (format, hardware, surface ? imageWindow : NULL);
-		ndk.AMediaFormat_delete (format);
+			// Configuring with a surface stores it in the format, so each codec
+			// gets its own copy of the track format
+			AMediaFormat* format = ndk.AMediaExtractor_getTrackFormat (video.extractor, videoTrack);
+			if (!format) return NULL;
 
-		return codec;
+			int32_t transfer = 0;
+			bool hdr = ndk.AMediaFormat_getInt32 (format, "color-transfer", &transfer) && (transfer == COLOR_TRANSFER_ST2084 || transfer == COLOR_TRANSFER_HLG);
+
+			if (ndk.AMediaFormat_setInt32) {
+
+				// Containers without an index, such as MPEG-TS, do not say how
+				// large a sample can be, and a keyframe larger than the decoder's
+				// default buffer could not be read
+				int32_t maxInputSize = 0;
+				int32_t width = 0;
+				int32_t height = 0;
+
+				if (!ndk.AMediaFormat_getInt32 (format, "max-input-size", &maxInputSize) && ndk.AMediaFormat_getInt32 (format, "width", &width) && ndk.AMediaFormat_getInt32 (format, "height", &height)) {
+
+					int64_t estimate = (int64_t)width * height * 3 / 4;
+					ndk.AMediaFormat_setInt32 (format, "max-input-size", (int32_t)std::min<int64_t> (std::max<int64_t> (estimate, 1 << 20), 16 << 20));
+
+				}
+
+				if (hdr && attempt == 0) {
+
+					ndk.AMediaFormat_setInt32 (format, "color-transfer-request", COLOR_TRANSFER_SDR_VIDEO);
+					if (!surface) ndk.AMediaFormat_setInt32 (format, "color-format", COLOR_FORMAT_YUV420_FLEXIBLE);
+
+				}
+
+			}
+
+			AMediaCodec* codec = CreateDecoder (format, hardware, surface ? imageWindow : NULL);
+			ndk.AMediaFormat_delete (format);
+
+			if (codec || !hdr || !ndk.AMediaFormat_setInt32) return codec;
+
+		}
+
+		return NULL;
 
 	}
 
 
 	VideoDecodeResult MediaCodecVideoBackend::DecodeAudio (std::vector<unsigned char>* pcm, double* time) {
 
-		if (!audio.codec) return VIDEO_DECODE_END;
+		if (audio.reopen && audio.codec) {
 
-		bool formatChanged = false;
-		VideoDecodeResult result = audio.Read (&formatChanged);
-
-		if (formatChanged && !ReadAudioFormat ()) result = VIDEO_DECODE_ERROR;
-
-		if (result != VIDEO_DECODE_OK) {
-
-			audio.Release ();
-			return result;
+			VideoDecodeResult result = ReopenStream (&audio, audioTrack);
+			if (result != VIDEO_DECODE_OK) return result;
 
 		}
 
-		size_t capacity = 0;
-		uint8_t* data = ndk.AMediaCodec_getOutputBuffer (audio.codec, audio.index, &capacity);
-		size_t offset = (size_t)audio.info.offset;
-		size_t length = (size_t)audio.info.size;
-		bool downmix = (audioSourceChannels > 2 && audioChannels == 2);
+		while (audio.codec) {
 
-		if (!data || offset > capacity || length > capacity - offset || (audioSourceChannels != audioChannels && !downmix)) {
+			bool formatChanged = false;
+			VideoDecodeResult result = audio.Read (&formatChanged);
 
-			audio.Release ();
-			return VIDEO_DECODE_ERROR;
+			if (formatChanged && !ReadAudioFormat ()) result = VIDEO_DECODE_ERROR;
 
-		}
+			// After restarting, the audio up to the last packet returned is skipped
+			if (result == VIDEO_DECODE_OK && audio.info.presentationTimeUs <= audioSkipTime) {
 
-		int frames = (int)(length / (audioSourceChannels * (audioFloat ? 4 : 2)));
-		const short* samples = (const short*)(data + offset);
-
-		if (audioFloat) {
-
-			const float* in = (const float*)(data + offset);
-			audioSamples.resize (frames * audioSourceChannels);
-
-			for (size_t i = 0; i < audioSamples.size (); i++) {
-
-				float sample = in[i] * 32768.0f;
-				audioSamples[i] = sample >= 32767.0f ? 32767 : (sample <= -32768.0f ? -32768 : (short)sample);
+				audio.Release ();
+				continue;
 
 			}
 
-			samples = audioSamples.data ();
+			size_t capacity = 0;
+			uint8_t* data = result == VIDEO_DECODE_OK ? ndk.AMediaCodec_getOutputBuffer (audio.codec, audio.index, &capacity) : NULL;
+			size_t offset = (size_t)audio.info.offset;
+			size_t length = (size_t)audio.info.size;
+			int sampleBytes = GetSampleBytes (audioEncoding);
+
+			if (result == VIDEO_DECODE_OK && (!data || offset > capacity || length > capacity - offset || sampleBytes <= 0 || audioSourceChannels <= 0)) {
+
+				result = VIDEO_DECODE_ERROR;
+
+			}
+
+			if (result != VIDEO_DECODE_OK) {
+
+				audio.Release ();
+
+				// A codec that fails, or that the system reclaims for another app, is
+				// replaced, carrying on after the last audio returned
+				if (result == VIDEO_DECODE_ERROR && RestartAudio ()) continue;
+
+				return result;
+
+			}
+
+			int frames = (int)(length / (audioSourceChannels * sampleBytes));
+			const short* samples = (const short*)(data + offset);
+
+			if (audioEncoding != PCM_ENCODING_16BIT) {
+
+				ConvertSamples (data + offset, (size_t)frames * audioSourceChannels, audioEncoding, &audioSamples);
+				samples = audioSamples.data ();
+
+			}
+
+			// Audio is given in the format it opened with, downmixing surround and
+			// following a stream that changes its rate or channels
+			if (audioSourceChannels == audioChannels && audioSourceRate == audioSampleRate) {
+
+				pcm->insert (pcm->end (), (const unsigned char*)samples, (const unsigned char*)(samples + frames * audioChannels));
+
+			} else {
+
+				ConvertAudio (samples, frames, audioSourceChannels, audioSourceRate, audioChannels, audioSampleRate, &audioConverter, pcm);
+
+			}
+
+			audioRestarts = 0;
+			audioSkipTime = INT64_MIN;
+			audioTime = audio.info.presentationTimeUs;
+			*time = audioTime / 1000000.0;
+			audio.Release ();
+
+			return VIDEO_DECODE_OK;
 
 		}
 
-		if (downmix) {
-
-			DownmixToStereo (samples, frames, audioSourceChannels, pcm);
-
-		} else {
-
-			pcm->insert (pcm->end (), (const unsigned char*)samples, (const unsigned char*)(samples + frames * audioChannels));
-
-		}
-
-		*time = audio.info.presentationTimeUs / 1000000.0;
-		audio.Release ();
-
-		return VIDEO_DECODE_OK;
+		return VIDEO_DECODE_END;
 
 	}
 
 
 	VideoDecodeResult MediaCodecVideoBackend::DecodeVideo (VideoPlanes* planes, double* time, double* duration) {
 
+		if (video.reopen && video.codec) {
+
+			VideoDecodeResult result = ReopenStream (&video, videoTrack);
+			if (result != VIDEO_DECODE_OK) return result;
+
+		}
+
 		// Texture output stopped, and VideoDecoder reads in memory until the
 		// seek that follows, so continue after the last frame in memory
 		if (videoSurface && video.codec) {
 
+			// A decoder that cannot give the same video in memory, as with a
+			// layout that cannot be read, is replaced in software
 			videoSkipTime = videoTime;
-			if (!ReplaceVideoCodec (hardwareActive, false, std::max (videoPosition, videoTime))) return VIDEO_DECODE_ERROR;
+			if (!ReplaceVideoCodec (hardwareActive, false, std::max (videoPosition, videoTime)) && !RestartVideo ()) return VIDEO_DECODE_ERROR;
 
 		}
 
@@ -1398,10 +2017,11 @@ namespace lime {
 			if (result == VIDEO_DECODE_OK && !GetPlanes (planes)) result = VIDEO_DECODE_ERROR;
 
 			// Some hardware decoders fail on a stream they accepted, or lose it to
-			// another app, so continue from the same frame in software
-			if (result == VIDEO_DECODE_ERROR && hardwareActive && RestartVideo ()) continue;
+			// another app, so continue from the same frame
+			if (result == VIDEO_DECODE_ERROR && RestartVideo ()) continue;
 			if (result != VIDEO_DECODE_OK) return result;
 
+			videoRestarts = 0;
 			videoSkipTime = INT64_MIN;
 			videoTime = video.info.presentationTimeUs;
 			*time = videoTime / 1000000.0;
@@ -1420,6 +2040,13 @@ namespace lime {
 
 		*frame = NULL;
 
+		if (video.reopen && video.codec) {
+
+			VideoDecodeResult result = ReopenStream (&video, videoTrack);
+			if (result != VIDEO_DECODE_OK) return result;
+
+		}
+
 		while (video.codec) {
 
 			// VideoDecoder reads the next frame with DecodeVideo instead
@@ -1430,7 +2057,7 @@ namespace lime {
 
 			if (formatChanged) ReadVideoFormat ();
 			if (result == VIDEO_DECODE_OK && video.info.presentationTimeUs <= videoSkipTime) continue;
-			if (result == VIDEO_DECODE_ERROR && hardwareActive && RestartVideo ()) continue;
+			if (result == VIDEO_DECODE_ERROR && RestartVideo ()) continue;
 			if (result != VIDEO_DECODE_OK) return result;
 
 			AImage* image = AcquireImage ();
@@ -1454,6 +2081,7 @@ namespace lime {
 			textureFrame->width = crop.right - crop.left;
 			*frame = textureFrame;
 
+			videoRestarts = 0;
 			videoSkipTime = INT64_MIN;
 			videoTime = video.info.presentationTimeUs;
 			*time = videoTime / 1000000.0;
@@ -1507,6 +2135,7 @@ namespace lime {
 
 		planes->colorMatrix = colorMatrix;
 		planes->fullRange = fullRange;
+		planes->transfer = colorTransfer;
 		planes->width = cropWidth;
 		planes->height = cropHeight;
 		planes->y = data + yOffset + (size_t)cropY * yStride + cropX;
@@ -1525,6 +2154,13 @@ namespace lime {
 
 		audio.interrupted = true;
 		video.interrupted = true;
+
+		{
+			// Reads waiting on a stalled network fail at once
+			std::lock_guard<std::mutex> lock (reads.mutex);
+			if (audio.dataSource) ndk.AMediaDataSource_close (audio.dataSource);
+			if (video.dataSource) ndk.AMediaDataSource_close (video.dataSource);
+		}
 
 		std::lock_guard<std::mutex> lock (imageMutex);
 		imageCondition.notify_all ();
@@ -1692,8 +2328,18 @@ namespace lime {
 
 		this->path = path;
 
+		// A seek can give up on a URL read through a data source, from Android 10
+		std::string source = path;
+		network = source.find ("://") != std::string::npos && source.compare (0, 10, "content://") != 0 && source.compare (0, 7, "file://") != 0
+			&& ndk.AMediaDataSource_newUri && ndk.AMediaDataSource_close && ndk.AMediaDataSource_delete && ndk.AMediaExtractor_setDataSourceCustom;
+
 		info->hasVideo = OpenVideo (hardwareDecoding) || (hardwareDecoding && OpenVideo (false));
 		info->hasAudio = OpenAudio ();
+
+		// A track that was found but cannot be decoded, such as one in a codec the
+		// device lacks
+		info->videoUnsupported = !info->hasVideo && videoTrackFound;
+		info->audioUnsupported = !info->hasAudio && audioTrackFound;
 
 		if (!info->hasVideo && !info->hasAudio) return false;
 
@@ -1701,6 +2347,8 @@ namespace lime {
 		info->audioSampleRate = audioSampleRate;
 		info->duration = duration;
 		info->frameRate = info->hasVideo ? frameRate : 0;
+		info->pixelAspectRatio = info->hasVideo ? pixelAspectRatio : 0;
+		info->rotation = info->hasVideo ? rotation : 0;
 		info->width = info->hasVideo ? cropWidth : 0;
 		info->height = info->hasVideo ? cropHeight : 0;
 
@@ -1711,24 +2359,31 @@ namespace lime {
 
 	bool MediaCodecVideoBackend::OpenAudio () {
 
-		AMediaExtractor* extractor = CreateExtractor ();
+		AMediaDataSource* dataSource = NULL;
+		AMediaExtractor* extractor = CreateExtractor (&dataSource);
 		if (!extractor) return false;
 
-		size_t track = 0;
-		AMediaFormat* format = SelectTrack (extractor, "audio/", &track);
+		AMediaFormat* format = SelectTrack (extractor, "audio/", &audioTrack);
 
 		if (!format) {
 
 			ndk.AMediaExtractor_delete (extractor);
+			if (dataSource) ndk.AMediaDataSource_delete (dataSource);
 			return false;
 
 		}
 
+		audioTrackFound = true;
+
 		int64_t durationUs = 0;
 		ndk.AMediaFormat_getInt64 (format, "durationUs", &durationUs);
 
+		// Decoders that can choose give 16-bit samples, which need no conversion
+		if (ndk.AMediaFormat_setInt32) ndk.AMediaFormat_setInt32 (format, "pcm-encoding", PCM_ENCODING_16BIT);
+
 		// Hardware decoding only applies to video
 		audio.codec = CreateDecoder (format, false, NULL);
+		audio.dataSource = dataSource;
 		audio.extractor = extractor;
 		ndk.AMediaFormat_delete (format);
 
@@ -1740,6 +2395,8 @@ namespace lime {
 		}
 
 		audioChannels = audioSourceChannels > 2 ? 2 : audioSourceChannels;
+		audioSampleRate = audioSourceRate;
+		audioConverter.Reset ();
 		if (durationUs / 1000000.0 > duration) duration = durationUs / 1000000.0;
 
 		return true;
@@ -1749,7 +2406,8 @@ namespace lime {
 
 	bool MediaCodecVideoBackend::OpenVideo (bool hardware) {
 
-		AMediaExtractor* extractor = CreateExtractor ();
+		AMediaDataSource* dataSource = NULL;
+		AMediaExtractor* extractor = CreateExtractor (&dataSource);
 		if (!extractor) return false;
 
 		AMediaFormat* format = SelectTrack (extractor, "video/", &videoTrack);
@@ -1757,9 +2415,21 @@ namespace lime {
 		if (!format) {
 
 			ndk.AMediaExtractor_delete (extractor);
+			if (dataSource) ndk.AMediaDataSource_delete (dataSource);
 			return false;
 
 		}
+
+		videoTrackFound = true;
+
+		// Phones store video recorded upright sideways, with the turn that shows
+		// it upright, and some video has pixels that are not square. Decoding
+		// keeps frames as they are stored.
+		int32_t degrees = 0;
+		int32_t sarWidth = 0;
+		int32_t sarHeight = 0;
+		rotation = ndk.AMediaFormat_getInt32 (format, "rotation-degrees", &degrees) ? degrees : 0;
+		pixelAspectRatio = ndk.AMediaFormat_getInt32 (format, "sar-width", &sarWidth) && ndk.AMediaFormat_getInt32 (format, "sar-height", &sarHeight) && sarWidth > 0 && sarHeight > 0 ? (double)sarWidth / sarHeight : 0;
 
 		float floatRate = 0;
 		int32_t intRate = 0;
@@ -1777,10 +2447,23 @@ namespace lime {
 		ndk.AMediaFormat_getInt32 (format, "width", &trackWidth);
 		ndk.AMediaFormat_getInt32 (format, "height", &trackHeight);
 
+		// Containers also give the size to show the picture at, which for pixels
+		// that are not square is wider or taller than the picture
+		int32_t displayWidth = 0;
+		int32_t displayHeight = 0;
+
+		if (pixelAspectRatio <= 0 && trackWidth > 0 && trackHeight > 0 && ndk.AMediaFormat_getInt32 (format, "display-width", &displayWidth) && ndk.AMediaFormat_getInt32 (format, "display-height", &displayHeight) && displayWidth > 0 && displayHeight > 0) {
+
+			double shape = ((double)displayWidth / trackWidth) / ((double)displayHeight / trackHeight);
+			if (fabs (shape - 1.0) > 0.01) pixelAspectRatio = shape;
+
+		}
+
 		// Texture output decodes into an image reader, falling back to memory
 		// when the decoder cannot use one
 		bool surface = textureOutput && CreateImageReader (trackWidth, trackHeight);
 
+		video.dataSource = dataSource;
 		video.extractor = extractor;
 		videoFormat = format;
 		video.codec = surface ? CreateVideoDecoder (hardware, true) : NULL;
@@ -1820,11 +2503,12 @@ namespace lime {
 		ndk.AMediaFormat_getInt32 (format, "sample-rate", &sampleRate);
 		ndk.AMediaFormat_delete (format);
 
-		audioFloat = (encoding == PCM_ENCODING_FLOAT);
-		audioSampleRate = sampleRate;
+		// The format of the audio being decoded now, which can change partway
+		audioEncoding = encoding;
 		audioSourceChannels = channels;
+		audioSourceRate = sampleRate;
 
-		return (channels > 0 && channels <= 8 && sampleRate > 0 && (encoding == PCM_ENCODING_16BIT || audioFloat));
+		return (channels > 0 && channels <= 8 && sampleRate > 0 && GetSampleBytes (encoding) > 0);
 
 	}
 
@@ -1961,6 +2645,17 @@ namespace lime {
 		cropWidth = right - left + 1;
 		cropHeight = bottom - top + 1;
 
+		// Decoders give the pixel shape from the stream itself where the
+		// container does not
+		int32_t sarWidth = 0;
+		int32_t sarHeight = 0;
+
+		if (pixelAspectRatio <= 0 && ndk.AMediaFormat_getInt32 (format, "sar-width", &sarWidth) && ndk.AMediaFormat_getInt32 (format, "sar-height", &sarHeight) && sarWidth > 0 && sarHeight > 0) {
+
+			pixelAspectRatio = (double)sarWidth / sarHeight;
+
+		}
+
 		// Frames decoded into the image reader have no memory layout to read
 		bool supported = videoSurface || ReadPlaneLayout (format, width, height);
 
@@ -1970,6 +2665,13 @@ namespace lime {
 
 		if (!ndk.AMediaFormat_getInt32 (format, "color-range", &range) || range == 0) ndk.AMediaFormat_getInt32 (videoFormat, "color-range", &range);
 		if (!ndk.AMediaFormat_getInt32 (format, "color-standard", &standard) || standard == 0) ndk.AMediaFormat_getInt32 (videoFormat, "color-standard", &standard);
+
+		// Decoders that tone map HDR, which they can from Android 13, say their
+		// frames are standard range. HDR that is not is tone mapped by
+		// VideoDecoder.
+		int32_t transfer = 0;
+		if ((!ndk.AMediaFormat_getInt32 (format, "color-transfer", &transfer) || transfer == 0) && GetSystemVersion () < 33) ndk.AMediaFormat_getInt32 (videoFormat, "color-transfer", &transfer);
+		colorTransfer = transfer == COLOR_TRANSFER_ST2084 ? VIDEO_COLOR_TRANSFER_PQ : (transfer == COLOR_TRANSFER_HLG ? VIDEO_COLOR_TRANSFER_HLG : VIDEO_COLOR_TRANSFER_SDR);
 
 		ndk.AMediaFormat_delete (format);
 
@@ -2021,6 +2723,36 @@ namespace lime {
 	}
 
 
+	void MediaCodecVideoBackend::ReleaseOrphans () {
+
+		std::vector<MediaCodecOrphan> list;
+
+		{
+			std::lock_guard<std::mutex> lock (*orphanMutex);
+			if (orphans->empty ()) return;
+			list.swap (*orphans);
+		}
+
+		EGLContext context = eglGetCurrentContext ();
+
+		for (size_t i = 0; i < list.size (); i++) {
+
+			// Objects from a context that is no longer current are left with it
+			MediaCodecOrphan& orphan = list[i];
+			if (orphan.context != context) continue;
+
+			if (orphan.copyBuffer) glDeleteBuffers (1, &orphan.copyBuffer);
+			if (orphan.copyFramebuffer) glDeleteFramebuffers (1, &orphan.copyFramebuffer);
+			if (orphan.copyProgram) glDeleteProgram (orphan.copyProgram);
+			if (orphan.copyTexture) glDeleteTextures (1, &orphan.copyTexture);
+			if (orphan.copyVertexArray && _glDeleteVertexArrays) _glDeleteVertexArrays (1, &orphan.copyVertexArray);
+			if (orphan.imageTexture) glDeleteTextures (1, &orphan.imageTexture);
+
+		}
+
+	}
+
+
 	void MediaCodecVideoBackend::ReleaseTextures () {
 
 		// GL names only mean these objects in the context that made them
@@ -2036,6 +2768,89 @@ namespace lime {
 		}
 
 		ForgetTextures ();
+
+	}
+
+
+	void MediaCodecVideoBackend::PrepareSeek () {
+
+		// A stream waiting on a stalled network source would hold up the seek
+		// until the connection gives up, which takes minutes. Reads from a
+		// source that is still sending finish soon, and those that have not by
+		// then are given up. Their streams connect again once the seek is done.
+		if (!network) return;
+
+		std::unique_lock<std::mutex> lock (reads.mutex);
+		reads.seeking = true;
+		reads.condition.wait_for (lock, std::chrono::milliseconds (SEEK_WAIT_MS), [this] { return !audio.busy && !video.busy; });
+
+		if (audio.busy) audio.GiveUp ();
+		if (video.busy) video.GiveUp ();
+
+	}
+
+
+	VideoDecodeResult MediaCodecVideoBackend::ReopenStream (MediaCodecStream* stream, size_t track) {
+
+		// A seek gave up on a read that waited on a stalled network source, so
+		// the stream reads through a new connection, from where the seek went.
+		// The codec carries on, as the seek flushed it. Connecting cannot be
+		// cancelled, so decoding waits for it a little at a time, and seeking
+		// and closing do not wait for it.
+		#ifndef LIME_VIDEO_STANDALONE
+		// A URL is read and closed through Java, so this thread joins the Java VM
+		SDL_GetAndroidJNIEnv ();
+		#endif
+
+		if (!stream->connection) {
+
+			if (stream->extractor) {
+
+				ndk.AMediaExtractor_delete (stream->extractor);
+				stream->extractor = NULL;
+
+			}
+
+			stream->SetDataSource (NULL);
+			stream->connection = Connect (path);
+
+		}
+
+		std::shared_ptr<MediaCodecConnection> connection = stream->connection;
+		AMediaDataSource* dataSource = NULL;
+
+		{
+			std::unique_lock<std::mutex> lock (connection->mutex);
+			if (!connection->condition.wait_for (lock, std::chrono::milliseconds (CONNECT_WAIT_MS), [&connection] { return connection->done; })) return VIDEO_DECODE_AGAIN;
+
+			dataSource = connection->dataSource;
+			connection->dataSource = NULL;
+		}
+
+		stream->connection.reset ();
+
+		// A server that cannot be reached is tried again at the next seek
+		if (!dataSource) return VIDEO_DECODE_ERROR;
+
+		// Opening reads from the source, which a seek or closing can give up
+		stream->SetDataSource (dataSource);
+		if (!stream->BeginRead ()) return VIDEO_DECODE_AGAIN;
+
+		AMediaExtractor* extractor = ndk.AMediaExtractor_new ();
+		bool opened = extractor && ndk.AMediaExtractor_setDataSourceCustom (extractor, dataSource) == AMEDIA_OK && ndk.AMediaExtractor_selectTrack (extractor, track) == AMEDIA_OK;
+		stream->EndRead ();
+
+		if (!opened) {
+
+			if (extractor) ndk.AMediaExtractor_delete (extractor);
+			return stream->cancelled ? VIDEO_DECODE_AGAIN : VIDEO_DECODE_ERROR;
+
+		}
+
+		// The extractor seeks to where the seek went before reading next
+		stream->extractor = extractor;
+		stream->reopen = false;
+		return VIDEO_DECODE_OK;
 
 	}
 
@@ -2058,25 +2873,74 @@ namespace lime {
 
 		if (!video.codec) return false;
 
-		ndk.AMediaExtractor_seekTo (video.extractor, position, AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC);
+		video.seekPosition = position;
 
 		return video.Prime () && ReadVideoFormat ();
 
 	}
 
 
+	bool MediaCodecVideoBackend::RestartAudio () {
+
+		// Closing interrupts decoding, which is not a failure
+		if (audio.interrupted || !audio.extractor || audioRestarts >= MAX_CODEC_RESTARTS) return false;
+
+		audioRestarts++;
+		audio.Release ();
+
+		if (audio.codec) {
+
+			ndk.AMediaCodec_stop (audio.codec);
+			ndk.AMediaCodec_delete (audio.codec);
+			audio.codec = NULL;
+
+		}
+
+		AMediaFormat* format = ndk.AMediaExtractor_getTrackFormat (audio.extractor, audioTrack);
+		if (!format) return false;
+
+		if (ndk.AMediaFormat_setInt32) ndk.AMediaFormat_setInt32 (format, "pcm-encoding", PCM_ENCODING_16BIT);
+		audio.codec = CreateDecoder (format, false, NULL);
+		ndk.AMediaFormat_delete (format);
+
+		if (!audio.codec) return false;
+
+		audio.ended = false;
+		audio.inputEnded = false;
+		audio.inputError = false;
+
+		// Resume from the packet before the last one returned, and skip to it
+		audio.seekPosition = audioTime != INT64_MIN ? audioTime : audioPosition;
+		audioSkipTime = audioTime;
+		return true;
+
+	}
+
+
 	bool MediaCodecVideoBackend::RestartVideo () {
 
+		// Closing interrupts decoding, which is not a failure
+		if (video.interrupted || videoRestarts >= MAX_CODEC_RESTARTS) return false;
+
+		videoRestarts++;
+
 		// Resume from the keyframe before the last frame returned, and skip to it
-		hardwareActive = false;
+		int64_t position = std::max (videoPosition, videoTime);
 		videoSkipTime = videoTime;
 
-		return ReplaceVideoCodec (false, videoSurface, std::max (videoPosition, videoTime));
+		// A hardware codec that the system reclaimed for another app is replaced
+		// by another the first time, and one that fails again by software
+		if (hardwareActive && videoRestarts == 1 && ReplaceVideoCodec (true, videoSurface, position)) return true;
+
+		hardwareActive = false;
+		return ReplaceVideoCodec (false, videoSurface, position);
 
 	}
 
 
 	bool MediaCodecVideoBackend::Seek (double time) {
+
+		reads.seeking = false;
 
 		int64_t position = (int64_t)(time * 1000000.0);
 		bool success = true;
@@ -2087,20 +2951,29 @@ namespace lime {
 			videoSkipTime = INT64_MIN;
 			videoTime = INT64_MIN;
 
-			// Texture output stopped, so decode into memory from here on
-			if (videoSurface && !textureOutput) {
+			// Texture output stopped, so decode into memory from here on, which
+			// a stream that connects again does once it has
+			if (videoSurface && !textureOutput && !video.reopen) {
 
 				success = ReplaceVideoCodec (hardwareActive, false, position) && success;
 
 			} else {
 
-				success = video.Seek (position) && success;
+				success = video.Seek (position, network) && success;
 
 			}
 
 		}
 
-		if (audio.codec) success = audio.Seek (position) && success;
+		if (audio.codec) {
+
+			audioConverter.Reset ();
+			audioPosition = position;
+			audioSkipTime = INT64_MIN;
+			audioTime = INT64_MIN;
+			success = audio.Seek (position, network) && success;
+
+		}
 
 		return success;
 
@@ -2118,7 +2991,8 @@ namespace lime {
 
 	bool MediaCodecVideoBackend::SupportsTextures () {
 
-		return videoSurface && textureOutput && !texturesFailed;
+		// HDR frames that VideoDecoder tone maps are decoded into memory
+		return videoSurface && textureOutput && !texturesFailed && colorTransfer == VIDEO_COLOR_TRANSFER_SDR;
 
 	}
 

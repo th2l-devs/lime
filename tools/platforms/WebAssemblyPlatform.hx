@@ -118,7 +118,19 @@ class WebAssemblyPlatform extends PlatformTarget
 		}
 
 		var hxml = targetDirectory + "/haxe/" + buildType + ".hxml";
-		var args = [hxml, "-D", "webassembly", "-D", "wasm", "-D", "emscripten", "-D", "webgl", "-D", "static_link"];
+		var args = [
+			hxml,
+			"-D",
+			"webassembly",
+			"-D",
+			"wasm",
+			"-D",
+			"emscripten",
+			"-D",
+			"webgl",
+			"-D",
+			"static_link"
+		];
 
 		if (Log.verbose)
 		{
@@ -135,7 +147,13 @@ class WebAssemblyPlatform extends PlatformTarget
 
 		project.path(sdkPath);
 
-		System.runCommand("", Path.combine(sdkPath, "upstream/emscripten/emcc"), ["-c", "-fwasm-exceptions", targetDirectory + "/obj/Main.cpp", "-o", targetDirectory + "/obj/Main.o"], true, false, true);
+		System.runCommand("", "em++", [
+			"-c",
+			"-fwasm-exceptions",
+			targetDirectory + "/obj/Main.cpp",
+			"-o",
+			targetDirectory + "/obj/Main.o"
+		], true, false, true);
 
 		args = ["Main.o"];
 
@@ -159,9 +177,7 @@ class WebAssemblyPlatform extends PlatformTarget
 			prefix = "lib";
 		}
 
-		args = args.concat([
-			prefix + "ApplicationMain" + (project.debug ? "-debug" : "") + ".a"
-		]);
+		args = args.concat([prefix + "ApplicationMain" + (project.debug ? "-debug" : "") + ".a"]);
 
 		if (!project.targetFlags.exists("asmjs"))
 		{
@@ -188,27 +204,6 @@ class WebAssemblyPlatform extends PlatformTarget
 			}
 		}
 
-		if (project.targetFlags.exists("final") || project.defines.exists("disable-exception-catching") || project.targetFlags.exists("disable-exception-catching"))
-		{
-			args.push("-s");
-			args.push("DISABLE_EXCEPTION_CATCHING=1");
-		}
-		else
-		{
-			args.push("-gsource-map");
-			args.push("-fwasm-exceptions");
-			args.push("-s");
-			args.push("SUPPORT_LONGJMP=wasm");
-			args.push("-s");
-			args.push("ASSERTIONS=1");
-			// args.push("-s");
-			// args.push("ASSERTIONS=2");
-			// args.push("-s");
-			// args.push("STACK_OVERFLOW_CHECK=2");
-			// args.push("-s");
-			// args.push("DEMANGLE_SUPPORT=1");
-		}
-
 		// Fix Rendering
 		args.push("-s");
 		args.push("MIN_WEBGL_VERSION=2");
@@ -220,6 +215,10 @@ class WebAssemblyPlatform extends PlatformTarget
 		// https://github.com/HaxeFoundation/hxcpp/blob/767fe94d19a041147c4f65dea02c89cb206a0758/toolchain/emscripten-toolchain.xml#L29-L33
 		args.push("-s");
 		args.push("BINARYEN_EXTRA_PASSES='--spill-pointers'");
+		// https://github.com/HaxeFoundation/hxcpp/commit/d7781f795158a4b6043138b61507ab99fe1ff2d7
+		args.push("--profiling-funcs");
+
+		args.push("-fwasm-exceptions");
 
 		// set initial size
 		// args.push("-s");
@@ -228,31 +227,32 @@ class WebAssemblyPlatform extends PlatformTarget
 		args.push("-s");
 		args.push("STACK_SIZE=1MB");
 
-        args.push("-s");
-        args.push("FETCH=1");
+		args.push("-s");
+		args.push("FETCH=1");
 
 		// args.push("-s");
 		// args.push("SAFE_HEAP=1");
 
 		if (project.targetFlags.exists("final"))
 		{
-		    args.push("-O3");
+			args.push("-O3");
 		}
 		else if (!project.debug)
 		{
-		    args.push("-O2");
+			args.push("-O2");
 		}
 		else
 		{
-		    args.push("-O1");
+			args.push("-O1");
 		}
 
 		args.push("-s");
 		args.push("ALLOW_MEMORY_GROWTH=1");
 
-        if(project.targetFlags.exists("websocket")) {
-            args.push("-lwebsocket.js");
-        }
+		if (project.targetFlags.exists("websocket"))
+		{
+			args.push("-lwebsocket.js");
+		}
 
 		if (project.targetFlags.exists("minify"))
 		{
@@ -291,7 +291,7 @@ class WebAssemblyPlatform extends PlatformTarget
 
 		// args.push ("../bin/index.html");
 
-		System.runCommand(targetDirectory + "/obj", Path.combine(sdkPath, "upstream/emscripten/emcc"), args, true, false, true);
+		System.runCommand(targetDirectory + "/obj", "em++", args, true, false, true);
 
 		if (FileSystem.exists(outputFile))
 		{
@@ -328,14 +328,6 @@ class WebAssemblyPlatform extends PlatformTarget
 		}
 	}
 
-	public override function clean():Void
-	{
-		if (FileSystem.exists(targetDirectory))
-		{
-			System.removeDirectory(targetDirectory);
-		}
-	}
-
 	public override function deploy():Void
 	{
 		DeploymentHelper.deploy(project, targetFlags, targetDirectory, "WebAssembly");
@@ -353,7 +345,7 @@ class WebAssemblyPlatform extends PlatformTarget
 		}
 	}
 
-	private function getDisplayHXML():HXML
+	private override function getDisplayHXML():HXML
 	{
 		var path = targetDirectory + "/haxe/" + buildType + ".hxml";
 
@@ -361,7 +353,8 @@ class WebAssemblyPlatform extends PlatformTarget
 		// modified more recently than the .hxml, then the .hxml cannot be
 		// considered valid anymore. it may cause errors in editors like vscode.
 		if (FileSystem.exists(path)
-			&& (project.projectFilePath == null || !FileSystem.exists(project.projectFilePath)
+			&& (project.projectFilePath == null
+				|| !FileSystem.exists(project.projectFilePath)
 				|| (FileSystem.stat(path).mtime.getTime() > FileSystem.stat(project.projectFilePath).mtime.getTime())))
 		{
 			return File.getContent(path);
@@ -394,17 +387,6 @@ class WebAssemblyPlatform extends PlatformTarget
 
 		// project = project.clone ();
 
-		for (asset in project.assets)
-		{
-			if (asset.embed && asset.sourcePath == "")
-			{
-				var path = Path.combine(targetDirectory + "/obj/tmp", asset.targetPath);
-				System.mkdir(Path.directory(path));
-				AssetHelper.copyAsset(asset, path);
-				asset.sourcePath = path;
-			}
-		}
-
 		// for (asset in project.assets)
 		// {
 		// 	asset.resourceName = "assets/" + asset.resourceName;
@@ -412,6 +394,8 @@ class WebAssemblyPlatform extends PlatformTarget
 
 		var destination = targetDirectory + "/bin/";
 		System.mkdir(destination);
+
+		prepareEmbeddedAssets();
 
 		// for (asset in project.assets) {
 		//
@@ -479,42 +463,13 @@ class WebAssemblyPlatform extends PlatformTarget
 			}
 		}
 
-		for (asset in project.assets)
-		{
-			var path = Path.combine(targetDirectory + "/obj/assets", asset.targetPath);
-
-			if (asset.type != AssetType.TEMPLATE)
-			{
-				// if (asset.type != AssetType.FONT) {
-
-				System.mkdir(Path.directory(path));
-				AssetHelper.copyAssetIfNewer(asset, path);
-
-				// }
-			}
-		}
-
 		ProjectHelper.recursiveSmartCopyTemplate(project, "webassembly/template", destination, context);
 		ProjectHelper.recursiveSmartCopyTemplate(project, "haxe", targetDirectory + "/haxe", context);
 		ProjectHelper.recursiveSmartCopyTemplate(project, "webassembly/hxml", targetDirectory + "/haxe", context);
 		// ProjectHelper.recursiveSmartCopyTemplate(project, "webassembly/cpp", targetDirectory + "/obj", context);
 		ProjectHelper.recursiveSmartCopyTemplate(project, "cpp/static", targetDirectory + "/obj", context);
 
-		for (asset in project.assets)
-		{
-			var path = Path.combine(destination, asset.targetPath);
-
-			if (asset.type == AssetType.TEMPLATE)
-			{
-				System.mkdir(Path.directory(path));
-				AssetHelper.copyAsset(asset, path, context);
-			}
-            else
-            {
-                System.mkdir(Path.directory(path));
-                AssetHelper.copyAsset(asset, path, context);
-            }
-		}
+		copyProjectAssets(destination);
 	}
 
 	@ignore public override function install():Void {}
@@ -522,4 +477,7 @@ class WebAssemblyPlatform extends PlatformTarget
 	@ignore public override function trace():Void {}
 
 	@ignore public override function uninstall():Void {}
+
+	// TODO: remove this line to enable watching?
+	@ignore public override function watch():Void {}
 }

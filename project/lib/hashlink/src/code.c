@@ -21,12 +21,12 @@
  */
 #include "hlmodule.h"
 
-#define OP(_,n) n,
+#define OP(_,_a,_b,_c) (_b == AR ? _c : (_c == X ? (_b == X ? (_a == X ? 0 : 1) : 2) : 3)),
 #define OP_BEGIN static int hl_op_nargs[] = {
 #define OP_END };
 #include "opcodes.h"
 
-#define OP(n,_) #n,
+#define OP(n,_a,_b,_c) #n,
 #define OP_BEGIN static const char *hl_op_names[] = {
 #define OP_END };
 #include "opcodes.h"
@@ -157,7 +157,7 @@ static void hl_read_type( hl_reader *r, hl_type *t ) {
 	case HMETHOD:
 		{
 			int i;
-			int nargs = READ(); 
+			int nargs = READ();
 			t->fun = (hl_type_fun*)hl_zalloc(&r->code->alloc,sizeof(hl_type_fun));
 			t->fun->nargs = nargs;
 			t->fun->args = (hl_type**)hl_malloc(&r->code->alloc,sizeof(hl_type*)*nargs);
@@ -187,6 +187,7 @@ static void hl_read_type( hl_reader *r, hl_type *t ) {
 			t->obj->proto = (hl_obj_proto*)hl_malloc(&r->code->alloc,sizeof(hl_obj_proto)*nproto);
 			t->obj->bindings = (int*)hl_malloc(&r->code->alloc,sizeof(int)*nbindings*2);
 			t->obj->rt = NULL;
+			t->obj->m = NULL;
 			for(i=0;i<nfields;i++) {
 				hl_obj_field *f = t->obj->fields + i;
 				f->name = hl_read_ustring(r);
@@ -205,9 +206,6 @@ static void hl_read_type( hl_reader *r, hl_type *t ) {
 				t->obj->bindings[(i<<1)|1] = UINDEX();
 			}
 		}
-		break;
-	case HREF:
-		t->tparam = hl_get_type(r);
 		break;
 	case HVIRTUAL:
 		{
@@ -246,7 +244,9 @@ static void hl_read_type( hl_reader *r, hl_type *t ) {
 			}
 		}
 		break;
+	case HREF:
 	case HNULL:
+	case HPACKED:
 		t->tparam = hl_get_type(r);
 		break;
 	default:
@@ -385,7 +385,7 @@ static int *hl_read_debug_infos( hl_reader *r, int nops ) {
 	int curfile = -1, curline = 0;
 	hl_code *code = r->code;
 	int *debug = (int*)hl_malloc(&code->alloc, sizeof(int) * nops * 2);
-	int i = 0;	
+	int i = 0;
 	while( i < nops ) {
 		int c = READ();
 		if( c & 1 ) {
@@ -422,7 +422,7 @@ static int *hl_read_debug_infos( hl_reader *r, int nops ) {
 }
 
 hl_code *hl_code_read( const unsigned char *data, int size, char **error_msg ) {
-	hl_reader _r = { data, size, 0, 0, NULL };	
+	hl_reader _r = { data, size, 0, 0, NULL };
 	hl_reader *r = &_r;
 	hl_code *c;
 	hl_alloc alloc;
@@ -445,14 +445,14 @@ hl_code *hl_code_read( const unsigned char *data, int size, char **error_msg ) {
 	c->nints = UINDEX();
 	c->nfloats = UINDEX();
 	c->nstrings = UINDEX();
-	if( c->version >= 5 ) 
+	if( c->version >= 5 )
 		c->nbytes = UINDEX();
 	c->ntypes = UINDEX();
 	c->nglobals = UINDEX();
 	c->nnatives = UINDEX();
 	c->nfunctions = UINDEX();
 	c->nconstants = c->version >= 4 ? UINDEX() : 0;
-	c->entrypoint = UINDEX();	
+	c->entrypoint = UINDEX();
 	c->hasdebug = flags & 1;
 	CHK_ERROR();
 	ALLOC(c->ints, int, c->nints);
@@ -605,7 +605,7 @@ static const unsigned int crc32_table[] =
 
 #define H(b) hash = (hash >> 8) ^ crc32_table[(hash ^ (b)) & 0xFF]
 #define H32(i) { H(i&0xFF); H((i>>8)&0xFF); H((i>>16)&0xFF); H(((unsigned int)i)>>24); }
-#define HFUN(idx) H32(h->functions_signs[h->functions_indexes[idx]]); 
+#define HFUN(idx) H32(h->functions_signs[h->functions_indexes[idx]]);
 #define HSTR(s) { const char *_c = s; while( *_c ) H(*_c++); }
 #define HUSTR(s) { const uchar *_c = s; while( *_c ) H(*_c++); }
 #define HTYPE(t) if( !isrec ) H32(hash_type_first(t,true))
@@ -923,11 +923,11 @@ hl_code_hash *hl_code_hash_alloc( hl_code *c ) {
 		case HOBJ:
 		case HSTRUCT:
 			if( t->obj->global_value )
-				h->globals_signs[(int)(int_val)t->obj->global_value - 1] = hl_code_hash_type(h,t); 
+				h->globals_signs[(int)(int_val)t->obj->global_value - 1] = hl_code_hash_type(h,t);
 			break;
 		case HENUM:
 			if( t->tenum->global_value )
-				h->globals_signs[(int)(int_val)t->tenum->global_value - 1] = hl_code_hash_type(h,t); 
+				h->globals_signs[(int)(int_val)t->tenum->global_value - 1] = hl_code_hash_type(h,t);
 			break;
 		default:
 			break;

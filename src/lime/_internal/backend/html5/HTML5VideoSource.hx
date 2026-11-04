@@ -4,6 +4,7 @@ import js.html.VideoElement;
 import js.Browser;
 import lime.app.Future;
 import lime.app.Promise;
+import lime.media.VideoClockMode;
 import lime.media.VideoFrame;
 import lime.media.VideoFrameFormat;
 import lime.media.VideoSource;
@@ -12,7 +13,9 @@ import lime.utils.Assets;
 @:access(lime.media.VideoSource)
 class HTML5VideoSource
 {
+	private var clockMode:VideoClockMode;
 	private var completed:Bool;
+	private var dropLateFrames:Bool;
 	private var element:VideoElement;
 	private var frameTime:Float;
 	private var gain:Float;
@@ -20,13 +23,16 @@ class HTML5VideoSource
 	private var loops:Int;
 	private var pan:Float;
 	private var parent:VideoSource;
+	private var path:String;
 	private var playing:Bool;
 
 	public function new(parent:VideoSource)
 	{
 		this.parent = parent;
 
+		clockMode = SMOOTH;
 		completed = false;
+		dropLateFrames = true;
 		frameTime = -1;
 		gain = 1;
 		rate = 1;
@@ -40,9 +46,38 @@ class HTML5VideoSource
 		close();
 	}
 
+	public function getClockMode():VideoClockMode
+	{
+		return clockMode;
+	}
+
 	public function getCurrentTime():Int
 	{
 		return element != null ? Std.int(element.currentTime * 1000) : 0;
+	}
+
+	public function getDisplayHeight():Int
+	{
+		// The browser sizes and turns the picture itself
+		return getHeight();
+	}
+
+	public function getDisplayWidth():Int
+	{
+		return getWidth();
+	}
+
+	public function getDroppedFrames():Int
+	{
+		// Browsers that count dropped frames report them in the playback quality
+		if (element == null || untyped element.getVideoPlaybackQuality == null) return 0;
+		var quality:Dynamic = untyped element.getVideoPlaybackQuality();
+		return quality != null ? quality.droppedVideoFrames : 0;
+	}
+
+	public function getDropLateFrames():Bool
+	{
+		return dropLateFrames;
 	}
 
 	public function getGain():Float
@@ -55,10 +90,24 @@ class HTML5VideoSource
 		return rate;
 	}
 
+	public function setRate(value:Float):Float
+	{
+		if (Math.isNaN(value)) return rate;
+		rate = Math.max(0.25, Math.min(4, value));
+		if (element != null) element.playbackRate = rate;
+		return rate;
+	}
+
 	public function getHasAudio():Bool
 	{
 		// Browsers do not report whether a video has sound
 		return element != null;
+	}
+
+	public function getHasVideo():Bool
+	{
+		// Known once the size is, and a picture the browser cannot decode has none
+		return element != null && element.videoWidth > 0;
 	}
 
 	public function getHeight():Int
@@ -82,9 +131,19 @@ class HTML5VideoSource
 		return pan;
 	}
 
+	public function getPixelAspectRatio():Float
+	{
+		return 1;
+	}
+
 	public function getPlaying():Bool
 	{
 		return playing;
+	}
+
+	public function getRotation():Int
+	{
+		return 0;
 	}
 
 	public function getWidth():Int
@@ -157,16 +216,18 @@ class HTML5VideoSource
 		element = cast Browser.document.createElement("video");
 		element.crossOrigin = "anonymous";
 		element.preload = "auto";
-		element.volume = Math.max(0, Math.min(1, gain));
 		element.playbackRate = rate;
+		element.volume = Math.max(0, Math.min(1, gain));
 		// Play inline on iOS rather than in the full screen player
 		element.setAttribute("playsinline", "");
 		element.addEventListener("ended", element_onEnded);
+		element.addEventListener("error", element_onError);
 		element.src = url;
 		element.load();
 
 		completed = false;
 		frameTime = -1;
+		this.path = path;
 		return true;
 	}
 
@@ -226,6 +287,12 @@ class HTML5VideoSource
 		return true;
 	}
 
+	public function setClockMode(value:VideoClockMode):VideoClockMode
+	{
+		// The browser keeps a <video> element in sync itself
+		return clockMode = value;
+	}
+
 	public function setCurrentTime(value:Int):Int
 	{
 		if (element != null)
@@ -238,12 +305,10 @@ class HTML5VideoSource
 		return value;
 	}
 
-	public function setRate(value:Float):Float
+	public function setDropLateFrames(value:Bool):Bool
 	{
-		if (Math.isNaN(value)) return rate;
-		rate = Math.max(0.25, Math.min(4, value));
-		if (element != null) element.playbackRate = rate;
-		return rate;
+		// Browsers always skip late frames
+		return dropLateFrames = value;
 	}
 
 	public function setGain(value:Float):Float
@@ -286,6 +351,7 @@ class HTML5VideoSource
 		if (element != null)
 		{
 			element.removeEventListener("ended", element_onEnded);
+			element.removeEventListener("error", element_onError);
 			element.pause();
 			element.removeAttribute("src");
 			element.load();
@@ -309,5 +375,13 @@ class HTML5VideoSource
 		playing = false;
 		completed = true;
 		parent.onComplete.dispatch();
+	}
+
+	@:noCompletion private function element_onError(_):Void
+	{
+		// Older externs leave out the message, which browsers give
+		var error:Dynamic = element.error;
+		playing = false;
+		parent.onError.dispatch("Cannot play " + path + (error != null && error.message != null && error.message != "" ? ": " + error.message : ""));
 	}
 }

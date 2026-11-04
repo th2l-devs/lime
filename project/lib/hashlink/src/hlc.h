@@ -23,31 +23,28 @@
 #define HLC_H
 
 #include <math.h>
+#define HL_DISABLE_LEGACY_FFI
 #include <hl.h>
-
-#ifdef HL_64
-#	define PAD_64_VAL	,0
-#else
-#	define PAD_64_VAL
-#endif
 
 #ifdef HLC_BOOT
 
 // undefine some commonly used names that can clash with class/var name
-#undef CONST
 #undef stdin
 #undef stdout
 #undef stderr
-#undef DELETE
-#undef NO_ERROR
 #undef EOF
-#undef STRICT
 #undef TRUE
 #undef FALSE
-#undef CW_USEDEFAULT
-#undef HIDDEN
-#undef RESIZABLE
 #undef __SIGN
+#undef INT_MAX
+#undef INT_MIN
+#undef INT16_MAX
+#undef BIG_ENDIAN
+#undef LITTLE_ENDIAN
+#undef OVERFLOW
+#undef UNDERFLOW
+#undef DOMAIN
+#undef __valid
 
 // disable some warnings triggered by HLC code generator
 
@@ -86,5 +83,29 @@ extern void hl_entry_point();
 
 #define HL__ENUM_CONSTRUCT__	hl_type *t; int index;
 #define HL__ENUM_INDEX__(v)		((venum*)(v))->index
+
+#if defined(HL_VCC)
+#define __hl_prefetch_m0(addr) _mm_prefetch((char*)addr, _MM_HINT_T0)
+#define __hl_prefetch_m1(addr) _mm_prefetch((char*)addr, _MM_HINT_T1)
+#define __hl_prefetch_m2(addr) _mm_prefetch((char*)addr, _MM_HINT_T2)
+#define __hl_prefetch_m3(addr) _mm_prefetch((char*)addr, _MM_HINT_NTA)
+#ifdef _MM_HINT_ET1
+#define __hl_prefetch_m4(addr) _mm_prefetch((char*)addr, _MM_HINT_ET1)
+#else
+#define __hl_prefetch_m4(addr) _m_prefetchw((char*)addr)
+#endif
+#elif defined(HL_CLANG) || defined (HL_GCC)
+#define __hl_prefetch_m0(addr) __builtin_prefetch((void*)addr, 0, 3)
+#define __hl_prefetch_m1(addr) __builtin_prefetch((void*)addr, 0, 2)
+#define __hl_prefetch_m2(addr) __builtin_prefetch((void*)addr, 0, 1)
+#define __hl_prefetch_m3(addr) __builtin_prefetch((void*)addr, 0, 0)
+#define __hl_prefetch_m4(addr) __builtin_prefetch((void*)addr, 1)
+#elif
+#define __hl_prefetch_m0(addr)
+#define __hl_prefetch_m1(addr)
+#define __hl_prefetch_m2(addr)
+#define __hl_prefetch_m3(addr)
+#define __hl_prefetch_m4(addr)
+#endif
 
 #endif

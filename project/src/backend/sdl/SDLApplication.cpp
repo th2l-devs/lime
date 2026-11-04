@@ -4,6 +4,10 @@
 #include "SDLDisplay.h"
 #include <system/System.h>
 
+#ifdef LIME_SDL_SOUND
+#include "SDL_sound.h"
+#endif
+
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
 #endif
@@ -81,6 +85,14 @@ namespace lime {
 			printf ("Could not initialize SDL: %s.\n", SDL_GetError ());
 
 		}
+
+		#ifdef LIME_SDL_SOUND
+		if (!Sound_Init ()) {
+
+			printf ("Could not initialize SDL_sound: %s.\n", Sound_GetError ());
+
+		}
+		#endif
 
 		SDL_SetLogPriority (SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_WARN);
 
@@ -239,6 +251,10 @@ namespace lime {
 			case SDL_EVENT_GAMEPAD_BUTTON_UP:
 			case SDL_EVENT_GAMEPAD_ADDED:
 			case SDL_EVENT_GAMEPAD_REMOVED:
+			case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+			case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+			case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+			case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
 
 				ProcessGamepadEvent (event);
 				break;
@@ -250,6 +266,16 @@ namespace lime {
 				// if the app was locked to portrait or landscape.
 				orientationEvent.type = DISPLAY_ORIENTATION_CHANGE;
 				orientationEvent.orientation = event->display.data1;
+				orientationEvent.display = SDLDisplay::GetIndex (event->display.displayID);
+				OrientationEvent::Dispatch (&orientationEvent);
+				break;
+
+			case SDL_EVENT_DISPLAY_ADDED:
+			case SDL_EVENT_DISPLAY_REMOVED:
+			case SDL_EVENT_DISPLAY_MOVED:
+
+				orientationEvent.type = event->type == SDL_EVENT_DISPLAY_ADDED ? DISPLAY_CONNECT : (event->type == SDL_EVENT_DISPLAY_REMOVED ? DISPLAY_DISCONNECT : DISPLAY_MOVE);
+				orientationEvent.orientation = 0;
 				orientationEvent.display = SDLDisplay::GetIndex (event->display.displayID);
 				OrientationEvent::Dispatch (&orientationEvent);
 				break;
@@ -452,6 +478,8 @@ namespace lime {
 
 		if (GamepadEvent::callback) {
 
+			gamepadEvent.timestamp = (int)SDL_NS_TO_MS (event->common.timestamp);
+
 			switch (event->type) {
 
 				case SDL_EVENT_GAMEPAD_AXIS_MOTION:
@@ -529,6 +557,32 @@ namespace lime {
 					GamepadEvent::Dispatch (&gamepadEvent);
 					SDLGamepad::Disconnect (event->gdevice.which);
 					gamepadsAxisMap.erase (event->gdevice.which);
+					break;
+
+				case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+
+					gamepadEvent.type = GAMEPAD_SENSOR_UPDATE;
+					gamepadEvent.id = event->gsensor.which;
+					gamepadEvent.axis = event->gsensor.sensor;
+					gamepadEvent.x = event->gsensor.data[0];
+					gamepadEvent.y = event->gsensor.data[1];
+					gamepadEvent.z = event->gsensor.data[2];
+
+					GamepadEvent::Dispatch (&gamepadEvent);
+					break;
+
+				case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+				case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+				case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
+
+					gamepadEvent.type = event->type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN ? GAMEPAD_TOUCHPAD_DOWN : (event->type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION ? GAMEPAD_TOUCHPAD_MOVE : GAMEPAD_TOUCHPAD_UP);
+					gamepadEvent.id = event->gtouchpad.which;
+					gamepadEvent.button = event->gtouchpad.finger;
+					gamepadEvent.x = event->gtouchpad.x;
+					gamepadEvent.y = event->gtouchpad.y;
+					gamepadEvent.z = event->gtouchpad.pressure;
+
+					GamepadEvent::Dispatch (&gamepadEvent);
 					break;
 
 			}
@@ -624,6 +678,7 @@ namespace lime {
 			keyEvent.keyCode = event->key.key;
 			keyEvent.modifier = event->key.mod;
 			keyEvent.windowID = event->key.windowID;
+			keyEvent.timestamp = (int)SDL_NS_TO_MS (event->key.timestamp);
 
 			if (keyEvent.type == KEY_DOWN) {
 
@@ -891,6 +946,11 @@ namespace lime {
 		#endif
 
 		CloseSensors ();
+
+		#ifdef LIME_SDL_SOUND
+		Sound_Quit ();
+		#endif
+
 		SDL_QuitSubSystem (initFlags);
 		SDL_Quit ();
 
@@ -1168,6 +1228,22 @@ namespace lime {
 		UpdateFrame ();
 
 	}
+
+
+	void SDLApplication::SetModalCallbacks (ValuePointer* update, ValuePointer* render, ValuePointer* window, ValuePointer* rethrow) {
+
+		delete update;
+		delete render;
+		delete window;
+		delete rethrow;
+
+	}
+
+
+	void SDLApplication::DeferModalException () {}
+
+
+	void AllowHighDPI () {}
 
 
 	Application* CreateApplication () {

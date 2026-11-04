@@ -1,8 +1,8 @@
 #define HL_NAME(n) ssl_##n
 
-#define _WINSOCKAPI_
 #include <hl.h>
 #ifdef HL_WIN
+#undef _GUID
 #include <winsock2.h>
 #include <wincrypt.h>
 #else
@@ -22,21 +22,26 @@ typedef int SOCKET;
 #define SOCKET_ERROR (-1)
 #define NRETRYS	20
 
-#include "mbedtls/platform.h"
 #include "mbedtls/error.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/ctr_drbg.h"
 #include "mbedtls/md.h"
 #include "mbedtls/pk.h"
-#include "mbedtls/oid.h"
-#include "mbedtls/x509_crt.h"
+#include "mbedtls/x509.h"
 #include "mbedtls/ssl.h"
+#include "mbedtls/oid.h"
+#if MBEDTLS_VERSION_MAJOR < 4
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/entropy.h"
+#endif
+
+#ifdef MBEDTLS_PSA_CRYPTO_C
+#include <psa/crypto.h>
+#endif
 
 #ifdef HL_CONSOLE
 mbedtls_x509_crt *hl_init_cert_chain();
 #endif
 
-#if defined(HL_WIN) || defined(HL_MAC) || defined(HL_IOS) || defined(HL_TVOS)
+#ifndef MSG_NOSIGNAL
 #	define MSG_NOSIGNAL 0
 #endif
 
@@ -64,8 +69,10 @@ struct _hl_ssl_pkey {
 #define TPKEY _ABSTRACT(hl_ssl_pkey)
 
 static bool ssl_init_done = false;
+#if MBEDTLS_VERSION_MAJOR < 4
 static mbedtls_entropy_context entropy;
 static mbedtls_ctr_drbg_context ctr_drbg;
+#endif
 
 static bool is_ssl_blocking( int r ) {
 	return r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE;
@@ -120,9 +127,7 @@ HL_PRIM int HL_NAME(ssl_handshake)(mbedtls_ssl_context *ssl) {
 		return -1;
 	if( r == MBEDTLS_ERR_SSL_CONN_EOF )
 		return -2;
-	if( r != 0 )
-		return ssl_error(r);
-	return 0;
+	return r;
 }
 
 
@@ -138,7 +143,10 @@ static bool is_block_error() {
 }
 
 static int net_read(void *fd, unsigned char *buf, size_t len) {
-	int r = recv((SOCKET)(int_val)fd, (char *)buf, (int)len, MSG_NOSIGNAL);
+	int r;
+	hl_blocking(true);
+	r = recv((SOCKET)(int_val)fd, (char *)buf, (int)len, MSG_NOSIGNAL);
+	hl_blocking(false);
 	if( r == SOCKET_ERROR && is_block_error() )
 		return MBEDTLS_ERR_SSL_WANT_READ;
 	return r;
@@ -241,7 +249,9 @@ HL_PRIM mbedtls_ssl_config *HL_NAME(conf_new)(bool server) {
 		ssl_error(ret);
 		return NULL;
 	}
+#if MBEDTLS_VERSION_MAJOR < 4
 	mbedtls_ssl_conf_rng(conf, mbedtls_ctr_drbg_random, &ctr_drbg);
+#endif
 	return conf;
 }
 
@@ -362,39 +372,25 @@ HL_PRIM hl_ssl_cert *HL_NAME(cert_load_defaults)() {
 		CertCloseStore(store, 0);
 	}
 #elif defined(HL_MAC)
-	CFMutableDictionaryRef search;
-	CFArrayRef result;
-	SecKeychainRef keychain;
-	SecCertificateRef item;
-	CFDataRef dat;
+	CFArrayRef certs;
 	// Load keychain
-	if (SecKeychainOpen("/System/Library/Keychains/SystemRootCertificates.keychain", &keychain) != errSecSuccess)
+	if (SecTrustCopyAnchorCertificates(&certs) != errSecSuccess)
 		return NULL;
 
-	// Search for certificates
-	search = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
-	CFDictionarySetValue(search, kSecClass, kSecClassCertificate);
-	CFDictionarySetValue(search, kSecMatchLimit, kSecMatchLimitAll);
-	CFDictionarySetValue(search, kSecReturnRef, kCFBooleanTrue);
-	CFDictionarySetValue(search, kSecMatchSearchList, CFArrayCreate(NULL, (const void **)&keychain, 1, NULL));
-	if (SecItemCopyMatching(search, (CFTypeRef *)&result) == errSecSuccess) {
-		CFIndex n = CFArrayGetCount(result);
-		for (CFIndex i = 0; i < n; i++) {
-			item = (SecCertificateRef)CFArrayGetValueAtIndex(result, i);
-
-			// Get certificate in DER format
-			dat = SecCertificateCopyData(item);
-			if (dat) {
-				if (chain == NULL) {
-					chain = (mbedtls_x509_crt*)malloc(sizeof(mbedtls_x509_crt));
-					mbedtls_x509_crt_init(chain);
-				}
-				mbedtls_x509_crt_parse_der(chain, (unsigned char *)CFDataGetBytePtr(dat), CFDataGetLength(dat));
-				CFRelease(dat);
+	CFIndex count = CFArrayGetCount(certs);
+	for(CFIndex i = 0; i < count; i++) {
+		SecCertificateRef item = (SecCertificateRef)CFArrayGetValueAtIndex(certs, i);
+		CFDataRef data = SecCertificateCopyData(item);
+		if(data) {
+			if (chain == NULL) {
+				chain = (mbedtls_x509_crt*)malloc(sizeof(mbedtls_x509_crt));
+				mbedtls_x509_crt_init(chain);
 			}
+			mbedtls_x509_crt_parse_der(chain, (unsigned char *)CFDataGetBytePtr(data), CFDataGetLength(data));
+			CFRelease(data);
 		}
 	}
-	CFRelease(keychain);
+	CFRelease(certs);
 #elif defined(HL_CONSOLE)
 	chain = hl_init_cert_chain();
 #endif
@@ -419,16 +415,158 @@ static vbyte *asn1_buf_to_string(mbedtls_asn1_buf *dat) {
 	return (vbyte*)hl_buffer_content(buf,NULL);
 }
 
+// The following code is adapted from `library/x509_oid.c` in MbedTLS 4.0.0
+// Originally Copyright The Mbed TLS Contributors
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+#define ADD_LEN(s) s, MBEDTLS_OID_SIZE(s)
+#define OID_DESCRIPTOR(s, name, description) {ADD_LEN(s)}
+#define NULL_OID_DESCRIPTOR {NULL, 0}
+
+typedef struct {
+  const char *asn1; /*!< OID ASN.1 representation       */
+  size_t asn1_len;  /*!< length of asn1                 */
+} mbedtls_x509_oid_descriptor_t;
+
+typedef struct {
+    mbedtls_x509_oid_descriptor_t    descriptor;
+    const char          *short_name;
+} oid_x520_attr_t;
+
+static const oid_x520_attr_t oid_x520_attr_type[] = {
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_CN, "id-at-commonName", "Common Name"),
+        "CN",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_COUNTRY, "id-at-countryName", "Country"),
+        "C",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_LOCALITY, "id-at-locality", "Locality"),
+        "L",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_STATE, "id-at-state", "State"),
+        "ST",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_ORGANIZATION, "id-at-organizationName",
+                       "Organization"),
+        "O",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_ORG_UNIT, "id-at-organizationalUnitName",
+                       "Org Unit"),
+        "OU",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_PKCS9_EMAIL, "emailAddress",
+                       "E-mail address"),
+        "emailAddress",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_SERIAL_NUMBER, "id-at-serialNumber",
+                       "Serial number"),
+        "serialNumber",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_POSTAL_ADDRESS, "id-at-postalAddress",
+                       "Postal address"),
+        "postalAddress",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_POSTAL_CODE, "id-at-postalCode",
+                       "Postal code"),
+        "postalCode",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_SUR_NAME, "id-at-surName", "Surname"),
+        "SN",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_GIVEN_NAME, "id-at-givenName",
+                       "Given name"),
+        "GN",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_INITIALS, "id-at-initials", "Initials"),
+        "initials",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_GENERATION_QUALIFIER,
+                       "id-at-generationQualifier", "Generation qualifier"),
+        "generationQualifier",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_TITLE, "id-at-title", "Title"),
+        "title",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_DN_QUALIFIER, "id-at-dnQualifier",
+                       "Distinguished Name qualifier"),
+        "dnQualifier",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_PSEUDONYM, "id-at-pseudonym",
+                       "Pseudonym"),
+        "pseudonym",
+    },
+#ifdef MBEDTLS_OID_UID
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_UID, "id-uid", "User Id"),
+        "uid",
+    },
+#endif
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_DOMAIN_COMPONENT, "id-domainComponent",
+                       "Domain component"),
+        "DC",
+    },
+    {
+        OID_DESCRIPTOR(MBEDTLS_OID_AT_UNIQUE_IDENTIFIER,
+                       "id-at-uniqueIdentifier", "Unique Identifier"),
+        "uniqueIdentifier",
+    },
+    {
+        NULL_OID_DESCRIPTOR,
+        NULL,
+    }};
+
+static const oid_x520_attr_t *
+oid_x520_attr_from_asn1(const mbedtls_asn1_buf *oid) {
+  const oid_x520_attr_t *p = (oid_x520_attr_type);
+  const mbedtls_x509_oid_descriptor_t *cur =
+      (const mbedtls_x509_oid_descriptor_t *)p;
+  if (p == NULL || oid == NULL)
+    return NULL;
+  while (cur->asn1 != NULL) {
+    if (cur->asn1_len == oid->len && memcmp(cur->asn1, oid->p, oid->len) == 0) {
+      return p;
+    }
+    p++;
+    cur = (const mbedtls_x509_oid_descriptor_t *)p;
+  }
+  return NULL;
+}
+
+static int oid_get_attr_short_name(const mbedtls_asn1_buf *oid,
+                                         const char **short_name) {
+  const oid_x520_attr_t *data = oid_x520_attr_from_asn1(oid);
+  if (data == NULL)
+    return -0x2100;
+  *short_name = data->short_name;
+  return 0;
+}
+
+// end code adapted from MbedTLS
+
 HL_PRIM vbyte *HL_NAME(cert_get_subject)(hl_ssl_cert *cert, vbyte *objname) {
-	mbedtls_x509_name *obj;
-	int r;
-	const char *oname, *rname;
-	obj = &cert->c->subject;
-	if (obj == NULL)
-		hl_error("Invalid subject");
-	rname = (char*)objname;
+	mbedtls_x509_name *obj = &cert->c->subject;
+	const char *rname = (char*)objname;
 	while (obj != NULL) {
-		r = mbedtls_oid_get_attr_short_name(&obj->oid, &oname);
+		const char *oname;
+		int r = oid_get_attr_short_name(&obj->oid, &oname);
 		if (r == 0 && strcmp(oname, rname) == 0)
 			return asn1_buf_to_string(&obj->val);
 		obj = obj->next;
@@ -437,15 +575,11 @@ HL_PRIM vbyte *HL_NAME(cert_get_subject)(hl_ssl_cert *cert, vbyte *objname) {
 }
 
 HL_PRIM vbyte *HL_NAME(cert_get_issuer)(hl_ssl_cert *cert, vbyte *objname) {
-	mbedtls_x509_name *obj;
-	int r;
-	const char *oname, *rname;
-	obj = &cert->c->issuer;
-	if (obj == NULL)
-		hl_error("Invalid issuer");
-	rname = (char*)objname;
+	mbedtls_x509_name *obj = &cert->c->issuer;
+	const char *rname = (char*)objname;
 	while (obj != NULL) {
-		r = mbedtls_oid_get_attr_short_name(&obj->oid, &oname);
+		const char *oname;
+		int r = oid_get_attr_short_name(&obj->oid, &oname);
 		if (r == 0 && strcmp(oname, rname) == 0)
 			return asn1_buf_to_string(&obj->val);
 		obj = obj->next;
@@ -460,7 +594,11 @@ HL_PRIM varray *HL_NAME(cert_get_altnames)(hl_ssl_cert *cert) {
 	varray *a = NULL;
 	vbyte **current = NULL;
 	mbedtls_x509_crt *crt = cert->c;
+#if MBEDTLS_VERSION_MAJOR >= 3
+	if (mbedtls_x509_crt_has_ext_type(crt, MBEDTLS_X509_EXT_SUBJECT_ALT_NAME)) {
+#else
 	if (crt->ext_types & MBEDTLS_X509_EXT_SUBJECT_ALT_NAME) {
+#endif
 		cur = &crt->subject_alt_names;
 		while (cur != NULL) {
 			if (pos == count) {
@@ -593,7 +731,13 @@ HL_PRIM hl_ssl_pkey *HL_NAME(key_from_der)(vbyte *data, int len, bool pub) {
 	if (pub)
 		r = mbedtls_pk_parse_public_key(pk, (const unsigned char*)data, len);
 	else
+#if MBEDTLS_VERSION_MAJOR >= 4
 		r = mbedtls_pk_parse_key(pk, (const unsigned char*)data, len, NULL, 0);
+#elif MBEDTLS_VERSION_MAJOR >= 3
+		r = mbedtls_pk_parse_key(pk, (const unsigned char*)data, len, NULL, 0, mbedtls_ctr_drbg_random, &ctr_drbg);
+#else
+		r = mbedtls_pk_parse_key(pk, (const unsigned char*)data, len, NULL, 0);
+#endif
 	if (r != 0) {
 		mbedtls_pk_free(pk);
 		free(pk);
@@ -618,10 +762,22 @@ HL_PRIM hl_ssl_pkey *HL_NAME(key_from_pem)(vbyte *data, bool pub, vbyte *pass) {
 	buf[len - 1] = '\0';
 	if (pub)
 		r = mbedtls_pk_parse_public_key(pk, buf, len);
+#if MBEDTLS_VERSION_MAJOR >= 4
 	else if (pass == NULL)
 		r = mbedtls_pk_parse_key(pk, buf, len, NULL, 0);
 	else
 		r = mbedtls_pk_parse_key(pk, buf, len, (const unsigned char*)pass, strlen((char*)pass));
+#elif MBEDTLS_VERSION_MAJOR >= 3
+	else if (pass == NULL)
+		r = mbedtls_pk_parse_key(pk, buf, len, NULL, 0, mbedtls_ctr_drbg_random, &ctr_drbg);
+	else
+		r = mbedtls_pk_parse_key(pk, buf, len, (const unsigned char*)pass, strlen((char*)pass), mbedtls_ctr_drbg_random, &ctr_drbg);
+#else
+	else if (pass == NULL)
+		r = mbedtls_pk_parse_key(pk, buf, len, NULL, 0);
+	else
+		r = mbedtls_pk_parse_key(pk, buf, len, (const unsigned char*)pass, strlen((char*)pass));
+#endif
 	free(buf);
 	if (r != 0) {
 		mbedtls_pk_free(pk);
@@ -638,12 +794,32 @@ HL_PRIM hl_ssl_pkey *HL_NAME(key_from_pem)(vbyte *data, bool pub, vbyte *pass) {
 DEFINE_PRIM(TPKEY, key_from_der, _BYTES _I32 _BOOL);
 DEFINE_PRIM(TPKEY, key_from_pem, _BYTES _BOOL _BYTES);
 
+static mbedtls_md_type_t md_type_from_string(const char *alg) {
+  if (strcmp(alg, "MD5") == 0) {
+	return MBEDTLS_MD_MD5;
+  } else if(strcmp(alg, "SHA1") == 0) {
+	return MBEDTLS_MD_SHA1;
+  } else if (strcmp(alg, "SHA224") == 0) {
+    return MBEDTLS_MD_SHA224;
+  } else if (strcmp(alg, "SHA256") == 0) {
+    return MBEDTLS_MD_SHA256;
+  } else if (strcmp(alg, "SHA384") == 0) {
+    return MBEDTLS_MD_SHA384;
+  } else if (strcmp(alg, "SHA512") == 0) {
+    return MBEDTLS_MD_SHA512;
+  } else if (strcmp(alg, "RIPEMD160") == 0) {
+    return MBEDTLS_MD_RIPEMD160;
+  } else {
+	hl_error("Unknown hash algorithm: %s", alg);
+  }
+}
+
 HL_PRIM vbyte *HL_NAME(dgst_make)(vbyte *data, int len, vbyte *alg, int *size) {
 	const mbedtls_md_info_t *md;
 	int mdlen, r = -1;
 	vbyte *out;
 
-	md = mbedtls_md_info_from_string((char*)alg);
+	md = mbedtls_md_info_from_type(md_type_from_string((char*)alg));
 	if (md == NULL) {
 		hl_error("Invalid hash algorithm");
 		return NULL;
@@ -666,7 +842,7 @@ HL_PRIM vbyte *HL_NAME(dgst_sign)(vbyte *data, int len, hl_ssl_pkey *key, vbyte 
 	unsigned char hash[MBEDTLS_MD_MAX_SIZE];
 	size_t ssize = size ? *size : 0;
 
-	md = mbedtls_md_info_from_string((char*)alg);
+	md = mbedtls_md_info_from_type(md_type_from_string((char*)alg));
 	if (md == NULL) {
 		hl_error("Invalid hash algorithm");
 		return NULL;
@@ -676,9 +852,16 @@ HL_PRIM vbyte *HL_NAME(dgst_sign)(vbyte *data, int len, hl_ssl_pkey *key, vbyte 
 		ssl_error(r);
 		return NULL;
 	}
-
+#if MBEDTLS_VERSION_MAJOR >= 4
+	out = hl_gc_alloc_noptr(MBEDTLS_PK_SIGNATURE_MAX_SIZE);
+	if ((r = mbedtls_pk_sign(key->k, mbedtls_md_get_type(md), hash, mbedtls_md_get_size(md), out, MBEDTLS_PK_SIGNATURE_MAX_SIZE, (size ? &ssize : NULL))) != 0) {
+#elif MBEDTLS_VERSION_MAJOR >= 3
+	out = hl_gc_alloc_noptr(MBEDTLS_PK_SIGNATURE_MAX_SIZE);
+	if ((r = mbedtls_pk_sign(key->k, mbedtls_md_get_type(md), hash, mbedtls_md_get_size(md), out, MBEDTLS_PK_SIGNATURE_MAX_SIZE, (size ? &ssize : NULL), mbedtls_ctr_drbg_random, &ctr_drbg)) != 0) {
+#else
 	out = hl_gc_alloc_noptr(MBEDTLS_MPI_MAX_SIZE);
 	if ((r = mbedtls_pk_sign(key->k, mbedtls_md_get_type(md), hash, 0, out, (size ? &ssize : NULL), mbedtls_ctr_drbg_random, &ctr_drbg)) != 0){
+#endif
 		ssl_error(r);
 		return NULL;
 	}
@@ -691,7 +874,7 @@ HL_PRIM bool HL_NAME(dgst_verify)(vbyte *data, int dlen, vbyte *sign, int slen, 
 	int r = -1;
 	unsigned char hash[MBEDTLS_MD_MAX_SIZE];
 	
-	md = mbedtls_md_info_from_string((char*)alg);
+	md = mbedtls_md_info_from_type(md_type_from_string((char*)alg));
 	if (md == NULL) {
 		hl_error("Invalid hash algorithm");
 		return false;
@@ -755,9 +938,14 @@ HL_PRIM void HL_NAME(ssl_init)() {
 #endif
 
 	// Init RNG
+#if MBEDTLS_VERSION_MAJOR < 4
 	mbedtls_entropy_init(&entropy);
 	mbedtls_ctr_drbg_init(&ctr_drbg);
 	mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0);
+#endif
+	#ifdef MBEDTLS_PSA_CRYPTO_C
+	psa_crypto_init();
+	#endif
 }
 
 DEFINE_PRIM(_VOID, ssl_init, _NO_ARG);

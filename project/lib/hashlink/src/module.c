@@ -23,6 +23,7 @@
 #include <hlmodule.h>
 
 #ifdef HL_WIN
+#	undef _GUID
 #	include <windows.h>
 EXTERN_C IMAGE_DOS_HEADER __ImageBase;
 #	define dlopen(l,p)		(void*)( (l) ? LoadLibraryA(l) : (HMODULE)&__ImageBase)
@@ -192,7 +193,7 @@ int hl_module_capture_stack_range( void *stack_top, void **stack_ptr, void **out
 							code_size -= s;
 							if( module_addr < (void*)code || module_addr >= (void*)(code + code_size) ) continue;
 						}
-						if( out )							
+						if( out )
 							out[count++] = module_addr;
 						else
 							count++;
@@ -206,7 +207,50 @@ int hl_module_capture_stack_range( void *stack_top, void **stack_ptr, void **out
 }
 
 static int module_capture_stack( void **stack, int size ) {
+#ifdef WIN64_UNWIND_TABLES
+	CONTEXT context;
+	RtlCaptureContext(&context);
+	int count = 0;
+	while(true) {
+		DWORD64 base;
+		DWORD64 ip = context.Rip;
+		PRUNTIME_FUNCTION fn_entry = RtlLookupFunctionEntry(ip, &base, NULL);
+		if (!fn_entry) {
+			break;
+		}
+		void *module_addr = (void*)ip;
+		for(int i=0;i<modules_count;i++) {
+			hl_module *m = cur_modules[i];
+			unsigned char *code = m->jit_code;
+			int code_size = m->codesize;
+			if( module_addr >= (void*)code && module_addr < (void*)(code + code_size) ) {
+				if( stack && count == size ) {
+					break;
+				}
+
+				if( stack )
+					stack[count++] = module_addr;
+				else
+					count++;
+				break;
+			}
+		}
+
+		if (stack && count == size) {
+			break;
+		}
+
+		void* handler_data;
+		ULONG64 establisher_frame;
+		RtlVirtualUnwind(0, base, ip, fn_entry, &context, &handler_data, &establisher_frame, NULL);
+		if (context.Rip == 0) {
+			break;
+		}
+	}
+	return count;
+#else
 	return hl_module_capture_stack_range(hl_get_thread()->stack_top, (void**)&stack, stack, size);
+#endif
 }
 
 static void hl_module_types_dump( void (*fdump)( void *, int) ) {
@@ -324,7 +368,7 @@ static void append_fields( char **p, hl_type *t ) {
 #define DISABLED_LIB_PTR ((void*)(int_val)2)
 
 static void *resolve_library( const char *lib, bool is_opt ) {
-	char tmp[256];	
+	char tmp[256];
 	void *h;
 
 #	ifndef HL_CONSOLE
@@ -346,7 +390,7 @@ static void *resolve_library( const char *lib, bool is_opt ) {
 
 	if( strcmp(lib,"std") == 0 ) {
 #	ifdef HL_WIN
-#		ifdef HL_64						
+#		ifdef HL_64
 		h = dlopen("libhl64.dll",RTLD_LAZY);
 		if( h == NULL ) h = dlopen("libhl.dll",RTLD_LAZY);
 #		else
@@ -358,7 +402,7 @@ static void *resolve_library( const char *lib, bool is_opt ) {
 		return RTLD_DEFAULT;
 #	endif
 	}
-	
+
 	strcpy(tmp,lib);
 
 #	ifdef HL_64
@@ -366,7 +410,7 @@ static void *resolve_library( const char *lib, bool is_opt ) {
 	h = dlopen(tmp,RTLD_LAZY);
 	if( h != NULL ) return h;
 #	endif
-	
+
 	strcpy(tmp+strlen(lib),".hdll");
 	h = dlopen(tmp,RTLD_LAZY);
 	if( h == NULL && !is_opt )
@@ -438,7 +482,7 @@ static void hl_module_init_indexes( hl_module *m ) {
 	for(i=0;i<m->code->nfunctions;i++) {
 		int k;
 		hl_function *f = m->code->functions + i;
-		hl_function *real_f = f;		
+		hl_function *real_f = f;
 		while( real_f && !real_f->obj ) real_f = real_f->field.ref;
 		if( real_f == NULL ) continue;
 		for(k=0;k<f->nops;k++) {
@@ -471,6 +515,72 @@ static void hl_module_init_indexes( hl_module *m ) {
 	fent->obj = &obj_entry;
 	fent->field.name = USTR("init");
 }
+
+#ifdef HL_VTUNE
+#include <jitprofiling.h>
+h_bool hl_module_init_vtune( hl_module *m ) {
+	int i;
+	if( !iJIT_IsProfilingActive() || m->jit_debug == NULL )
+		return false;
+	for(i=0;i<m->code->nfunctions;i++) {
+		hl_function *f = m->code->functions + i;
+		void *faddr = m->functions_ptrs[f->findex];
+
+		iJIT_Method_Load jm = {0};
+		char out[256];
+		jm.method_id = iJIT_GetNewMethodID();
+		if( f->obj ) {
+			jm.class_file_name = hl_to_utf8(f->obj->name);
+			jm.method_name = hl_to_utf8(f->field.name);
+		} else if( f->field.ref ) {
+			jm.class_file_name = hl_to_utf8(f->field.ref->obj->name);
+			jm.method_name = hl_to_utf8(f->field.ref->field.name);
+		} else {
+			sprintf(out,"fun$%d", f->findex);
+			jm.method_name = out;
+		}
+		jm.method_load_address = faddr;
+		jm.method_size = 0;
+		int j;
+		for(j=0;j<m->code->nfunctions;j++) {
+			hl_function *f2 = m->code->functions + j;
+			if( f2 == f ) continue;
+			void *addr = m->functions_ptrs[f2->findex];
+			int_val dif = (char*)addr - (char*)faddr;
+			if( dif <= 0 ) continue;
+			if( jm.method_size == 0 || dif < jm.method_size ) jm.method_size = (int)dif;
+		}
+
+		int file = f->debug[0] & 0x7FFFFFFF;
+		int curline = -1;
+		LineNumberInfo *lines = (LineNumberInfo*)malloc(sizeof(LineNumberInfo)*f->nops);
+		int nlines = 0;
+		hl_debug_infos *dbg = m->jit_debug + i;
+		jm.source_file_name = m->code->debugfiles[file];
+		for(j=0;j<f->nops;j++) {
+			int file2 = f->debug[j<<1] & 0x7FFFFFFF;
+			int line = f->debug[(j<<1)|1];
+			if( file2 != file || line == curline ) continue;
+			lines[nlines].Offset = dbg->large ? ((int*)dbg->offsets)[j] : ((unsigned short*)dbg->offsets)[j];
+			lines[nlines].LineNumber = line - 1;
+			curline = line;
+			nlines++;
+		}
+		if( nlines && jm.method_size ) {
+			jm.line_number_table = lines;
+			jm.line_number_size = nlines;
+		}
+		iJIT_NotifyEvent(iJVM_EVENT_TYPE_METHOD_LOAD_FINISHED,(void*)&jm);
+		free(lines);
+	}
+	return true;
+}
+static void modules_init_vtune() {
+	int i;
+	for(i=0;i<modules_count;i++)
+		hl_module_init_vtune(cur_modules[i]);
+}
+#endif
 
 static void hl_module_init_natives( hl_module *m ) {
 	char tmp[256];
@@ -509,7 +619,7 @@ static void hl_module_init_natives( hl_module *m ) {
 		p = tmp;
 		append_type(&p,n->t);
 		*p++ = 0;
-		if( memcmp(sign,tmp,strlen(sign)+1) != 0 )
+		if( sign && memcmp(sign,tmp,strlen(sign)+1) != 0 )
 			hl_fatal4("Invalid signature for function %s@%s : %s required but %s found in hdll",n->lib,n->name,tmp,sign);
 	}
 }
@@ -619,16 +729,104 @@ int hl_module_init( hl_module *m, h_bool hot_reload ) {
 		hl_constant *c = m->code->constants + i;
 		hl_module_init_constant(m, c);
 	}
-
 	hl_module_add(m);
-	hl_setup_exception(module_resolve_symbol, module_capture_stack);
+	hl_setup.resolve_symbol = module_resolve_symbol;
+	hl_setup.capture_stack = module_capture_stack;
 	hl_gc_set_dump_types(hl_module_types_dump);
+#	ifdef HL_VTUNE
+	hl_setup.vtune_init = modules_init_vtune;
+#	endif
 	hl_jit_free(ctx, hot_reload);
 	if( hot_reload ) {
 		hl_code_hash_finalize(m->hash);
 		m->jit_ctx = ctx;
 	}
 	return 1;
+}
+
+static bool check_same_type( hl_type *t1, hl_type *t2 ) {
+	if( hl_safe_cast(t1,t2) )
+		return true;
+	if( t1->kind != t2->kind )
+		return false;
+	int i;
+	switch( t1->kind ) {
+	case HOBJ:
+	case HSTRUCT:
+		return ucmp(t1->obj->name,t2->obj->name) == 0;
+	case HFUN:
+	case HMETHOD:
+		if( t1->fun->nargs != t2->fun->nargs )
+			return false;
+		for(i=0;i<t1->fun->nargs;i++)
+			if( !check_same_type(t1->fun->args[i],t2->fun->args[i]) )
+				return false;
+		return check_same_type(t1->fun->ret, t2->fun->ret);
+	case HVIRTUAL:
+		if( t1->virt == t2->virt )
+			return true;
+		if( t1->virt->nfields != t2->virt->nfields )
+			return false;
+		hl_type_virtual *vt2 = t2->virt;
+		t2->virt = t1->virt; // assume equals !
+		for(i=0;i<t1->virt->nfields;i++) {
+			hl_obj_field *f1 = t1->virt->fields + i;
+			hl_obj_field *f2 = t2->virt->fields + i;
+			if( f1->hashed_name != f2->hashed_name || !check_same_type(f1->t, f2->t) ) {
+				t2->virt = vt2;
+				return false;
+			}
+		}
+		t2->virt = vt2;
+		return true;
+	case HABSTRACT:
+		return ucmp(t1->abs_name, t2->abs_name) == 0;
+	case HENUM:
+		return ucmp(t1->tenum->name, t2->tenum->name) == 0;
+	case HPACKED:
+		return check_same_type(t1->tparam, t2->tparam);
+	default:
+		break;
+	}
+	return false;
+}
+
+static int check_same_obj( hl_type_obj *o1, hl_type_obj *o2 ) {
+	if( o1->nproto != o2->nproto || o1->nfields != o2->nfields || o1->nbindings != o2->nbindings )
+		return -1;
+	int i;
+	for(i=0;i<o1->nproto;i++)
+		if( o1->proto[i].hashed_name != o2->proto[i].hashed_name )
+			return -1;
+	for(i=0;i<o1->nfields;i++)
+		if( o1->fields[i].hashed_name != o2->fields[i].hashed_name || !check_same_type(o1->fields[i].t,o2->fields[i].t) )
+			return -1;
+	for(i=0;i<o1->nproto;i++)
+		if( o1->proto[i].pindex != o2->proto[i].pindex )
+			return -2;
+	return 0;
+}
+
+hl_type *hl_module_resolve_type( hl_module *m, hl_type *t, bool err ) {
+	int i;
+	if( t->kind != HOBJ && t->kind != HSTRUCT )
+		return NULL;
+	for(i=0;i<m->code->ntypes;i++) {
+		hl_type *t2 = m->code->types + i;
+		if( t2->kind == t->kind && ucmp(t->obj->name,t2->obj->name) == 0 ) {
+			int r = check_same_obj(t->obj,t2->obj);
+			if( r == 0 )
+				return t2;
+			if( err ) {
+				if( r == -2 )
+					hl_error("Class '%s' has different prototype than loader (missing @:virtual)",t->obj->name);
+				else
+					hl_error("Class '%s' has different definition than loader",t->obj->name);
+			}
+			return NULL;
+		}
+	}
+	return NULL;
 }
 
 h_bool hl_module_patch( hl_module *m1, hl_code *c ) {
@@ -657,7 +855,7 @@ h_bool hl_module_patch( hl_module *m1, hl_code *c ) {
 	}
 	memset(m2->globals_data+m1->globals_size,0,gsize - m1->globals_size);
 	m2->globals_size = gsize;
-	
+
 	hl_module_init_natives(m2);
 	hl_module_init_indexes(m2);
 	hl_jit_reset(ctx, m2);
@@ -802,7 +1000,7 @@ h_bool hl_module_patch( hl_module *m1, hl_code *c ) {
 		fflush(stdout);
 		return false;
 	}
-	
+
 	for(i=0;i<m2->code->nfunctions;i++) {
 		hl_function *f2 = m2->code->functions + i;
 		if( m2->hash->functions_hashes[i] < -1 ) continue;
@@ -827,12 +1025,16 @@ h_bool hl_module_patch( hl_module *m1, hl_code *c ) {
 	hl_module_add(m2);
 
 	// call entry point (will only update types)
-	if( m2->functions_ptrs[c->entrypoint] ) {
-		vclosure cl;
-		cl.t = c->functions[m2->functions_indexes[c->entrypoint]].type;
-		cl.fun = m2->functions_ptrs[c->entrypoint];
-		cl.hasValue = 0;
-		hl_dyn_call(&cl,NULL,0);
+	for(i=modules_count-1;i>=0;i--) {
+		hl_module *m = cur_modules[i];
+		if( m->functions_ptrs[m->code->entrypoint] ) {
+			vclosure cl;
+			cl.t = m->code->functions[m->functions_indexes[m->code->entrypoint]].type;
+			cl.fun = m->functions_ptrs[m->code->entrypoint];
+			cl.hasValue = 0;
+			hl_dyn_call(&cl,NULL,0);
+			break;
+		}
 	}
 
 	return true;
@@ -845,6 +1047,10 @@ void hl_module_free( hl_module *m ) {
 	}
 	hl_free(&m->ctx.alloc);
 	hl_free_executable_memory(m->code, m->codesize);
+#ifdef WIN64_UNWIND_TABLES
+	RtlDeleteFunctionTable(m->unwind_table);
+	free(m->unwind_table);
+#endif
 	if( m->hash ) hl_code_hash_free(m->hash);
 	free(m->functions_indexes);
 	free(m->functions_ptrs);

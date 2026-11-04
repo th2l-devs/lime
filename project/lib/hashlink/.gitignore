@@ -9,7 +9,10 @@
 *.user
 *.n
 Debug
+DebugAll
 Release
+ReleaseAll
+ReleaseDX12Agility
 x64
 *.stackdump
 *.hdll
@@ -20,9 +23,13 @@ x64
 *.a
 *.opendb
 *.VC.db
+.cache
+.vs
 /hl
 /include/sdl
 /include/openal
+/include/aftermath
+/include/streamline
 ReleaseStatic
 /other/benchs/bench.*
 /other/benchs/cpp
@@ -37,7 +44,6 @@ ReleaseStatic
 /src/Makefile
 /include/ffmpeg
 shiroLibs
-ReleaseVS*
 /include/bullet
 /libs/bullet/sample/sample.js
 /libs/bullet/bullet_js.cpp
@@ -53,3 +59,5 @@ node_modules
 /*.tgz
 args.txt
 /other/benchs/hlc
+/packages
+packages.config

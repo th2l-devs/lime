@@ -33,6 +33,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
+#include <dlfcn.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -55,12 +57,42 @@ namespace lime {
 	// AVAssetReader starts each stream at the first frame or sample in its time
 	// range, so a seek reads from a little earlier to include the frame showing
 	// at the seek time. VideoDecoder drops what precedes an accurate seek.
-	static const double SEEK_PREROLL = 0.1;
+	static const double SEEK_PREROLL = 1.0;
+
+	// A reader that fails mid-stream, as iOS makes them when it reclaims the
+	// decoder of an application in the background, is started again this many
+	// times in a row before the stream ends with an error
+	static const int MAX_READER_RESTARTS = 3;
+
+
+	static VideoColorTransfer ToTransfer (CFTypeRef transfer) {
+
+		// The PQ and HLG constants need macOS 10.13 and iOS 11, so their values
+		// are compared
+		if (transfer && CFGetTypeID (transfer) == CFStringGetTypeID ()) {
+
+			if (CFEqual (transfer, CFSTR ("SMPTE_ST_2084_PQ"))) return VIDEO_COLOR_TRANSFER_PQ;
+			if (CFEqual (transfer, CFSTR ("ITU_R_2100_HLG"))) return VIDEO_COLOR_TRANSFER_HLG;
+
+		}
+
+		return VIDEO_COLOR_TRANSFER_SDR;
+
+	}
 
 
 	// CVBufferCopyAttachment, which replaces CVBufferGetAttachment, needs macOS 12 and iOS 15
 	#pragma clang diagnostic push
 	#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+	static VideoColorTransfer GetTransfer (CVBufferRef buffer, VideoColorTransfer source) {
+
+		// AVFoundation tone maps HDR to the standard range it is asked for, but
+		// not all of it, such as H.264, whose frames keep their transfer
+		CFTypeRef transfer = CVBufferGetAttachment (buffer, kCVImageBufferTransferFunctionKey, NULL);
+		return transfer ? ToTransfer (transfer) : source;
+
+	}
 
 	static VideoColorMatrix GetColorMatrix (CVBufferRef buffer, int width, int height) {
 
@@ -91,6 +123,66 @@ namespace lime {
 	}
 
 
+	// The synchronous track properties are deprecated in favor of asynchronous
+	// loading, but Open has to wait for them anyway
+	#pragma clang diagnostic push
+	#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+	static VideoColorTransfer GetSourceTransfer (AVAssetTrack* track) {
+
+		NSArray* formats = [track formatDescriptions];
+		if ([formats count] == 0) return VIDEO_COLOR_TRANSFER_SDR;
+
+		CMVideoFormatDescriptionRef format = LIME_BRIDGE (CMVideoFormatDescriptionRef, [formats objectAtIndex:0]);
+		return ToTransfer (CMFormatDescriptionGetExtension (format, kCMFormatDescriptionExtension_TransferFunction));
+
+	}
+
+
+	static double GetPixelAspectRatio (AVAssetTrack* track) {
+
+		NSArray* formats = [track formatDescriptions];
+		if ([formats count] == 0) return 0;
+
+		CMVideoFormatDescriptionRef format = LIME_BRIDGE (CMVideoFormatDescriptionRef, [formats objectAtIndex:0]);
+
+		// A pasp box gives the shape of the pixels
+		CFTypeRef shape = CMFormatDescriptionGetExtension (format, kCMFormatDescriptionExtension_PixelAspectRatio);
+
+		if (shape && CFGetTypeID (shape) == CFDictionaryGetTypeID ()) {
+
+			CFNumberRef horizontal = (CFNumberRef)CFDictionaryGetValue ((CFDictionaryRef)shape, kCMFormatDescriptionKey_PixelAspectRatioHorizontalSpacing);
+			CFNumberRef vertical = (CFNumberRef)CFDictionaryGetValue ((CFDictionaryRef)shape, kCMFormatDescriptionKey_PixelAspectRatioVerticalSpacing);
+			double horizontalSpacing = 0;
+			double verticalSpacing = 0;
+
+			if (horizontal && vertical && CFNumberGetValue (horizontal, kCFNumberDoubleType, &horizontalSpacing) && CFNumberGetValue (vertical, kCFNumberDoubleType, &verticalSpacing) && horizontalSpacing > 0 && verticalSpacing > 0) {
+
+				return horizontalSpacing / verticalSpacing;
+
+			}
+
+		}
+
+		// Otherwise the size the track is shown at, where it differs from the
+		// size it is stored at
+		CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions (format);
+		CGSize natural = [track naturalSize];
+
+		if (dimensions.width > 0 && dimensions.height > 0 && natural.width > 0 && natural.height > 0) {
+
+			double ratio = (natural.width / dimensions.width) / (natural.height / dimensions.height);
+			if (fabs (ratio - 1.0) > 0.01) return ratio;
+
+		}
+
+		return 0;
+
+	}
+
+	#pragma clang diagnostic pop
+
+
 	static double GetSeconds (CMTime time, double fallback) {
 
 		return CMTIME_IS_NUMERIC (time) ? CMTimeGetSeconds (time) : fallback;
@@ -108,9 +200,17 @@ namespace lime {
 			NSURL* url = [NSURL URLWithString:string];
 
 			// File URLs are often written without escaping spaces and other characters
-			if (!url && [string hasPrefix:@"file://"]) url = [NSURL fileURLWithPath:[string substringFromIndex:7]];
+			if (!url && [string hasPrefix:@"file://"]) {
 
-			return url;
+				NSString* filePath = [string substringFromIndex:7];
+				if ([filePath hasPrefix:@"localhost/"]) filePath = [filePath substringFromIndex:9];
+				url = [NSURL fileURLWithPath:filePath];
+
+			}
+
+			// AVAssetReader only reads local files, so other URLs fail straight
+			// away rather than after loading over the network
+			return url && [url isFileURL] ? url : nil;
 
 		}
 
@@ -128,6 +228,26 @@ namespace lime {
 		}
 
 		return [NSURL fileURLWithPath:[[fileManager currentDirectoryPath] stringByAppendingPathComponent:string]];
+
+	}
+
+
+	static void RegisterDecoders () {
+
+		// VideoToolbox decodes VP9 from macOS 11 once its decoder is registered.
+		// It is looked up at runtime, so older systems and iOS go without.
+		static std::once_flag flag;
+
+		std::call_once (flag, [] {
+
+			typedef void (*RegisterDecoderFunc) (uint32_t);
+			void* videoToolbox = dlopen ("/System/Library/Frameworks/VideoToolbox.framework/VideoToolbox", RTLD_LAZY | RTLD_LOCAL);
+			RegisterDecoderFunc registerDecoder = videoToolbox ? (RegisterDecoderFunc)dlsym (videoToolbox, "VTRegisterSupplementalVideoDecoderIfAvailable") : NULL;
+
+			// kCMVideoCodecType_VP9, 'vp09'
+			if (registerDecoder) registerDecoder (0x76703039);
+
+		});
 
 	}
 
@@ -222,6 +342,29 @@ namespace lime {
 	#endif
 
 
+	#if defined (LIME_VIDEO_AVF_TEXTURES) && defined (HX_MACOS)
+
+	// GL objects of a backend closed away from the GL thread, deleted the next
+	// time a decoder reads a texture frame where their context is current
+	struct AVFOrphan {
+
+		void* context;
+		GLuint copyFramebuffer;
+		GLuint copyTexture;
+		bool framebufferEXT;
+		GLuint sourceFramebuffer;
+		GLuint sourceTexture;
+
+	};
+
+	// Never destroyed, as exiting runs static destructors while threads can
+	// still be closing videos
+	static std::mutex* orphanMutex = new std::mutex ();
+	static std::vector<AVFOrphan>* orphans = new std::vector<AVFOrphan> ();
+
+	#endif
+
+
 	// Only iOS uses a CoreVideo texture cache
 	#if defined (LIME_VIDEO_AVF_TEXTURES) && !defined (HX_MACOS)
 	typedef CVOpenGLESTextureCacheRef AVFTextureCacheRef;
@@ -305,6 +448,7 @@ namespace lime {
 			virtual unsigned int LockTexture (VideoTextureFrame* frame);
 			virtual bool Open (const char* path, bool hardwareDecoding, VideoStreamInfo* info);
 			virtual void ReleaseTextureFrame (VideoTextureFrame* frame);
+			virtual void ReleaseOrphans ();
 			virtual void ReleaseTextures ();
 			virtual bool Seek (double time);
 			virtual void SetTextureOutput (bool enabled);
@@ -318,8 +462,9 @@ namespace lime {
 			void GetSampleTimes (CMSampleBufferRef sample, double* time, double* duration);
 			bool OpenAudio (AVAssetTrack* track);
 			bool OpenVideo (AVAssetTrack* track, int* width, int* height);
+			bool RestartVideo (bool textures);
 			bool StartAudio (double time);
-			bool StartVideo (double time, bool textures);
+			bool StartVideo (double time, bool textures, bool standardColor = true);
 			void StopAudio ();
 			void StopVideo ();
 			void UnlockVideo ();
@@ -330,6 +475,7 @@ namespace lime {
 			AVAssetReaderTrackOutput* audioOutput;
 			double audioPosition;
 			AVAssetReader* audioReader;
+			int audioRestarts;
 			int audioSampleRate;
 			AVAssetTrack* audioTrack;
 			unsigned int copyFramebuffer;
@@ -338,16 +484,19 @@ namespace lime {
 			int copyTextureWidth;
 			bool framebufferEXT;
 			double frameRate;
+			VideoColorTransfer frameTransfer;
 			CMSampleBufferRef lockedSample;
 			CMSampleBufferRef pendingSample;
 			unsigned int sourceFramebuffer;
 			unsigned int sourceTexture;
+			VideoColorTransfer sourceTransfer;
 			AVFTextureCacheRef textureCache;
 			void* textureContext;
 			std::atomic<bool> textureOutput;
 			AVAssetReaderTrackOutput* videoOutput;
 			double videoPosition;
 			AVAssetReader* videoReader;
+			int videoRestarts;
 			bool videoTextures;
 			AVAssetTrack* videoTrack;
 
@@ -363,6 +512,7 @@ namespace lime {
 		audioOutput = nil;
 		audioPosition = 0;
 		audioReader = nil;
+		audioRestarts = 0;
 		audioSampleRate = 0;
 		audioTrack = nil;
 		copyFramebuffer = 0;
@@ -371,16 +521,19 @@ namespace lime {
 		copyTextureWidth = 0;
 		framebufferEXT = false;
 		frameRate = 0;
+		frameTransfer = VIDEO_COLOR_TRANSFER_SDR;
 		lockedSample = NULL;
 		pendingSample = NULL;
 		sourceFramebuffer = 0;
 		sourceTexture = 0;
+		sourceTransfer = VIDEO_COLOR_TRANSFER_SDR;
 		textureCache = NULL;
 		textureContext = NULL;
 		textureOutput = false;
 		videoOutput = nil;
 		videoPosition = 0;
 		videoReader = nil;
+		videoRestarts = 0;
 		videoTextures = false;
 		videoTrack = nil;
 
@@ -391,10 +544,31 @@ namespace lime {
 
 		Close ();
 
+		// A decoder collected away from its GL thread still lets go of the
+		// texture cache, which keeps its context alive
+		ForgetTextures ();
+
 	}
 
 
 	void AVFVideoBackend::Close () {
+
+		#if defined (LIME_VIDEO_AVF_TEXTURES) && defined (HX_MACOS)
+		// GL objects still held were left by closing away from the GL thread, as
+		// closing there releases them first
+		if (copyTexture || sourceTexture || copyFramebuffer || sourceFramebuffer) {
+
+			AVFOrphan orphan = { textureContext, copyFramebuffer, copyTexture, framebufferEXT, sourceFramebuffer, sourceTexture };
+
+			{
+				std::lock_guard<std::mutex> lock (*orphanMutex);
+				orphans->push_back (orphan);
+			}
+
+			ForgetTextures ();
+
+		}
+		#endif
 
 		@autoreleasepool {
 
@@ -415,6 +589,8 @@ namespace lime {
 		audioPosition = 0;
 		audioSampleRate = 0;
 		frameRate = 0;
+		frameTransfer = VIDEO_COLOR_TRANSFER_SDR;
+		sourceTransfer = VIDEO_COLOR_TRANSFER_SDR;
 		videoPosition = 0;
 
 	}
@@ -452,7 +628,17 @@ namespace lime {
 			while (true) {
 
 				CMSampleBufferRef sample = [audioOutput copyNextSampleBuffer];
+
+				if (!sample && [audioReader status] == AVAssetReaderStatusFailed && audioRestarts < MAX_READER_RESTARTS) {
+
+					audioRestarts++;
+					StopAudio ();
+					if (StartAudio (audioPosition)) continue;
+
+				}
+
 				if (!sample) return GetEndResult (audioReader);
+				audioRestarts = 0;
 
 				CMBlockBufferRef buffer = CMSampleBufferGetDataBuffer (sample);
 				size_t length = buffer ? CMBlockBufferGetDataLength (buffer) : 0;
@@ -508,7 +694,9 @@ namespace lime {
 			if (!videoOutput) return videoTrack ? VIDEO_DECODE_ERROR : VIDEO_DECODE_END;
 
 			CMSampleBufferRef sample = CopyNextVideoSample ();
+			if (!sample && RestartVideo (false)) sample = CopyNextVideoSample ();
 			if (!sample) return GetEndResult (videoReader);
+			videoRestarts = 0;
 
 			CVPixelBufferRef image = CMSampleBufferGetImageBuffer (sample);
 
@@ -536,6 +724,7 @@ namespace lime {
 			// The output format is video range, which full range sources are converted to
 			planes->colorMatrix = GetColorMatrix (image, width, height);
 			planes->fullRange = false;
+			planes->transfer = frameTransfer = GetTransfer (image, sourceTransfer);
 			planes->width = width;
 			planes->height = height;
 			planes->y = y;
@@ -564,7 +753,9 @@ namespace lime {
 		@autoreleasepool {
 
 			CMSampleBufferRef sample = CopyNextVideoSample ();
+			if (!sample && RestartVideo (true)) sample = CopyNextVideoSample ();
 			if (!sample) return GetEndResult (videoReader);
+			videoRestarts = 0;
 
 			CVPixelBufferRef image = CMSampleBufferGetImageBuffer (sample);
 
@@ -572,6 +763,17 @@ namespace lime {
 
 				CFRelease (sample);
 				return VIDEO_DECODE_ERROR;
+
+			}
+
+			// HDR that was not tone mapped is decoded into memory from here on,
+			// where VideoDecoder tone maps it
+			frameTransfer = GetTransfer (image, sourceTransfer);
+
+			if (frameTransfer != VIDEO_COLOR_TRANSFER_SDR) {
+
+				CFRelease (sample);
+				return VIDEO_DECODE_OK;
 
 			}
 
@@ -812,6 +1014,8 @@ namespace lime {
 
 		if (!path || !path[0]) return false;
 
+		RegisterDecoders ();
+
 		@autoreleasepool {
 
 			NSURL* url = GetURL (path);
@@ -832,7 +1036,24 @@ namespace lime {
 			info->hasVideo = [videoTracks count] > 0 && OpenVideo ([videoTracks objectAtIndex:0], &width, &height);
 			info->hasAudio = [audioTracks count] > 0 && OpenAudio ([audioTracks objectAtIndex:0]);
 
+			// A track that was found but cannot be decoded, such as one in a codec
+			// the system lacks
+			info->videoUnsupported = [videoTracks count] > 0 && !info->hasVideo;
+			info->audioUnsupported = [audioTracks count] > 0 && !info->hasAudio;
+
 			if (!info->hasVideo && !info->hasAudio) return false;
+
+			if (info->hasVideo) {
+
+				// Phones store video recorded upright sideways, with a transform
+				// that turns it, and some video has pixels that are not square.
+				// Frames are decoded as they are stored.
+				CGAffineTransform transform = [videoTrack preferredTransform];
+				info->rotation = (int)lround (atan2 (transform.b, transform.a) * 180.0 / M_PI);
+				info->pixelAspectRatio = GetPixelAspectRatio (videoTrack);
+				sourceTransfer = GetSourceTransfer (videoTrack);
+
+			}
 
 			info->audioChannels = audioChannels;
 			info->audioSampleRate = audioSampleRate;
@@ -939,6 +1160,36 @@ namespace lime {
 	}
 
 
+	void AVFVideoBackend::ReleaseOrphans () {
+
+		#if defined (LIME_VIDEO_AVF_TEXTURES) && defined (HX_MACOS)
+		std::vector<AVFOrphan> list;
+
+		{
+			std::lock_guard<std::mutex> lock (*orphanMutex);
+			if (orphans->empty ()) return;
+			list.swap (*orphans);
+		}
+
+		void* context = (void*)CGLGetCurrentContext ();
+
+		for (size_t i = 0; i < list.size (); i++) {
+
+			// Objects from a context that is no longer current are left with it
+			AVFOrphan& orphan = list[i];
+			if (orphan.context != context) continue;
+
+			if (orphan.copyTexture) glDeleteTextures (1, &orphan.copyTexture);
+			if (orphan.sourceTexture) glDeleteTextures (1, &orphan.sourceTexture);
+			if (orphan.copyFramebuffer) DeleteFramebuffer (orphan.framebufferEXT, orphan.copyFramebuffer);
+			if (orphan.sourceFramebuffer) DeleteFramebuffer (orphan.framebufferEXT, orphan.sourceFramebuffer);
+
+		}
+		#endif
+
+	}
+
+
 	void AVFVideoBackend::ReleaseTextures () {
 
 		#ifdef LIME_VIDEO_AVF_TEXTURES
@@ -956,6 +1207,18 @@ namespace lime {
 		#endif
 
 		ForgetTextures ();
+
+	}
+
+
+	bool AVFVideoBackend::RestartVideo (bool textures) {
+
+		if ([videoReader status] != AVAssetReaderStatusFailed || videoRestarts >= MAX_READER_RESTARTS) return false;
+
+		// Carries on from the frame after the last one read
+		videoRestarts++;
+		StopVideo ();
+		return StartVideo (videoPosition, textures);
 
 	}
 
@@ -1039,11 +1302,10 @@ namespace lime {
 	}
 
 
-	bool AVFVideoBackend::StartVideo (double time, bool textures) {
+	bool AVFVideoBackend::StartVideo (double time, bool textures, bool standardColor) {
 
-		NSDictionary* settings = @{
-			LIME_BRIDGE (NSString*, kCVPixelBufferPixelFormatTypeKey): @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-		};
+		NSMutableDictionary* settings = [NSMutableDictionary dictionary];
+		[settings setObject:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) forKey:LIME_BRIDGE (NSString*, kCVPixelBufferPixelFormatTypeKey)];
 
 		#ifdef LIME_VIDEO_AVF_TEXTURES
 		if (textures) {
@@ -1056,16 +1318,27 @@ namespace lime {
 
 			// VideoToolbox converts to BGRA on the GPU, into IOSurfaces that OpenGL
 			// can use
-			settings = @{
-				LIME_BRIDGE (NSString*, kCVPixelBufferPixelFormatTypeKey): @(kCVPixelFormatType_32BGRA),
-				LIME_BRIDGE (NSString*, kCVPixelBufferIOSurfacePropertiesKey): @{},
-				LIME_BRIDGE (NSString*, compatibilityKey): @YES
-			};
+			[settings setObject:@(kCVPixelFormatType_32BGRA) forKey:LIME_BRIDGE (NSString*, kCVPixelBufferPixelFormatTypeKey)];
+			[settings setObject:@{} forKey:LIME_BRIDGE (NSString*, kCVPixelBufferIOSurfacePropertiesKey)];
+			[settings setObject:@YES forKey:LIME_BRIDGE (NSString*, compatibilityKey)];
 
 		}
 		#else
 		textures = false;
 		#endif
+
+		if (standardColor) {
+
+			// HDR and wide gamut sources, such as the HLG video iPhones record, are
+			// tone mapped to standard BT.709, which frames are shown in. The keys'
+			// values are used, as the constants need macOS 10.10 and iOS 10.
+			[settings setObject:@{
+				@"ColorPrimaries": @"ITU_R_709_2",
+				@"TransferFunction": @"ITU_R_709_2",
+				@"YCbCrMatrix": @"ITU_R_709_2"
+			} forKey:@"ColorProperties"];
+
+		}
 
 		@try {
 
@@ -1081,7 +1354,9 @@ namespace lime {
 
 			StopVideo ();
 
-			// Decode into memory when the texture output is not accepted
+			// Systems that refuse the color setting decode as the source is, and
+			// memory is used when the texture output is not accepted
+			if (standardColor) return StartVideo (time, textures, false);
 			return textures ? StartVideo (time, false) : false;
 
 		}
@@ -1136,7 +1411,7 @@ namespace lime {
 
 	bool AVFVideoBackend::SupportsTextures () {
 
-		return videoTextures && textureOutput;
+		return videoTextures && textureOutput && frameTransfer == VIDEO_COLOR_TRANSFER_SDR;
 
 	}
 

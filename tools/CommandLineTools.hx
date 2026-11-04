@@ -420,8 +420,7 @@ class CommandLineTools
 				publishProject();
 
 			case "installer", "copy-if-newer":
-
-			// deprecated?
+				// deprecated?
 
 			default:
 				Log.error("'" + command + "' is not a valid command");
@@ -610,19 +609,16 @@ class CommandLineTools
 					platform = new AndroidPlatform(command, project, targetFlags);
 
 				case BLACKBERRY:
-
-				// platform = new BlackBerryPlatform (command, project, targetFlags);
+					// platform = new BlackBerryPlatform (command, project, targetFlags);
 
 				case IOS:
 					platform = new IOSPlatform(command, project, targetFlags);
 
 				case TIZEN:
-
-				// platform = new TizenPlatform (command, project, targetFlags);
+					// platform = new TizenPlatform (command, project, targetFlags);
 
 				case WEBOS:
-
-				// platform = new WebOSPlatform (command, project, targetFlags);
+					// platform = new WebOSPlatform (command, project, targetFlags);
 
 				case WINDOWS:
 					platform = new WindowsPlatform(command, project, targetFlags);
@@ -798,14 +794,22 @@ class CommandLineTools
 	{
 		var commands = [
 
-			         "config" => "Display or set command-line configuration values",    "create" => "Create a new project or extension using templates",
-			                    "clean" => "Clean the specified project and target",     "update" => "Copy assets for the specified project and target",
-			  "build" => "Compile and package for the specified project and target",    "run" => "Install and run for the specified project and target",
-			                       "test" => "Update, build and run in one command",                                  "help" => "Show this information",
-			          "trace" => "Trace output for the specifed project and target",                            "deploy" => "Archive and upload builds",
-			"display" => "Display information for the specified project and target",             "rebuild" => "Recompile native binaries for libraries",
-			       "install" => "Install a library from haxelib, plus dependencies",                        "remove" => "Remove a library from haxelib",
-			                          "upgrade" => "Upgrade a library from haxelib", "setup" => "Setup " + defaultLibraryName + " or a specific platform"
+			"config" => "Display or set command-line configuration values",
+			"create" => "Create a new project or extension using templates",
+			"clean" => "Clean the specified project and target",
+			"update" => "Copy assets for the specified project and target",
+			"build" => "Compile and package for the specified project and target",
+			"run" => "Install and run for the specified project and target",
+			"test" => "Update, build and run in one command",
+			"help" => "Show this information",
+			"trace" => "Trace output for the specifed project and target",
+			"deploy" => "Archive and upload builds",
+			"display" => "Display information for the specified project and target",
+			"rebuild" => "Recompile native binaries for libraries",
+			"install" => "Install a library from haxelib, plus dependencies",
+			"remove" => "Remove a library from haxelib",
+			"upgrade" => "Upgrade a library from haxelib",
+			"setup" => "Setup " + defaultLibraryName + " or a specific platform"
 
 		];
 
@@ -994,6 +998,11 @@ class CommandLineTools
 		if (isBuildCommand && command != "run" && command != "trace")
 		{
 			Log.println("  \x1b[1m-clean\x1b[0m -- Add a \"clean\" action before running the current command");
+		}
+
+		if (command == "build" || command == "test")
+		{
+			Log.println("  \x1b[1m-noupdate\x1b[0m -- Disable the \"update\" action before running the current command");
 		}
 
 		Log.println("  \x1b[1m-nocolor\x1b[0m -- Disable ANSI format codes in output");
@@ -1790,9 +1799,14 @@ class CommandLineTools
 			return null;
 		}
 
-		if (project == null || (command != "rebuild" && project.sources.length == 0 && !FileSystem.exists(project.app.main + ".hx")))
+		if (project == null)
 		{
 			Log.error("You must have a \"project.xml\" file or specify another valid project file when using the '" + command + "' command");
+			return null;
+		}
+		else if (command != "rebuild" && project.sources.length == 0 && !FileSystem.exists(project.app.main + ".hx"))
+		{
+			Log.error("Main class \"" + project.app.main + "\" not found. Expected: " + Log.accentColor + FileSystem.absolutePath(project.app.main + ".hx") + Log.resetColor + "\nDid you mean to include a <source /> element in your \"project.xml\" file?");
 			return null;
 		}
 
@@ -1851,7 +1865,9 @@ class CommandLineTools
 
 					var projectDirectory = Path.directory(projectFile);
 					var localRepository = Path.combine(projectDirectory, ".haxelib");
-					if (FileSystem.exists(localRepository) && FileSystem.isDirectory(localRepository) && StringTools.startsWith(path, localRepository))
+					if (FileSystem.exists(localRepository)
+						&& FileSystem.isDirectory(localRepository)
+						&& StringTools.startsWith(path, localRepository))
 					{
 						pushToolFlag(args, "-nolocalrepocheck");
 					}

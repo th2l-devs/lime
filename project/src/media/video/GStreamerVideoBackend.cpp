@@ -8,6 +8,8 @@
 #include <chrono>
 #include <dlfcn.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <string>
 
@@ -26,10 +28,12 @@ namespace lime {
 	struct GstCaps;
 	struct GstElement;
 	struct GstElementFactory;
+	struct GstEvent;
 	struct GstPad;
 	struct GstSample;
 	struct GstSegment;
 	struct GstStructure;
+	struct GstTagList;
 
 
 	// Every GObject instance starts with a pointer to its class
@@ -133,6 +137,7 @@ namespace lime {
 	static const int GST_BUS_PASS = 1;
 	static const uint64_t GST_CLOCK_TIME_NONE = (uint64_t)-1;
 	static const uint64_t GST_ELEMENT_FACTORY_TYPE_DEMUXER = 1 << 5;
+	static const int GST_EVENT_TAG = (80 << 8) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4);
 	static const int GST_FORMAT_TIME = 3;
 	static const int GST_MAP_READ = 1;
 	static const int GST_MESSAGE_ASYNC_DONE = 1 << 21;
@@ -148,6 +153,7 @@ namespace lime {
 	static const int GST_SEEK_FLAG_SNAP_BEFORE = 1 << 5;
 	static const int GST_STATE_CHANGE_ASYNC = 2;
 	static const int GST_STATE_CHANGE_FAILURE = 0;
+	static const int GST_STATE_CHANGE_NO_PREROLL = 3;
 	static const int GST_STATE_NULL = 1;
 	static const int GST_STATE_PAUSED = 3;
 	static const int GST_STATE_PLAYING = 4;
@@ -161,6 +167,8 @@ namespace lime {
 	static const int GST_VIDEO_COLOR_RANGE_0_255 = 1;
 	static const int GST_VIDEO_COLOR_RANGE_16_235 = 2;
 	static const int GST_VIDEO_COLOR_RANGE_UNKNOWN = 0;
+	static const int GST_VIDEO_TRANSFER_ARIB_STD_B67 = 15;
+	static const int GST_VIDEO_TRANSFER_SMPTE2084 = 14;
 
 	// A stalled stream fails after longer than souphttpsrc waits before it
 	// reconnects, which is 15 seconds
@@ -169,6 +177,9 @@ namespace lime {
 	static const unsigned int MAX_VIDEO_BUFFERS = 2;
 	static const int OPEN_TIMEOUT_SECONDS = 20;
 	static const uint64_t PULL_INTERVAL = 100 * GST_MSECOND;
+
+	// A hardware decoder that fails partway is replaced in software within this
+	static const int SOFTWARE_REOPEN_SECONDS = 5;
 
 
 	struct GStreamerLibrary {
@@ -202,10 +213,12 @@ namespace lime {
 		GstElementFactory* (*gst_element_get_factory) (GstElement*);
 		GstPad* (*gst_element_get_static_pad) (GstElement*, const char*);
 		gboolean (*gst_element_link) (GstElement*, GstElement*);
+		gboolean (*gst_element_query) (GstElement*, GstQuery*);
 		gboolean (*gst_element_query_duration) (GstElement*, int, int64_t*);
 		gboolean (*gst_element_seek_simple) (GstElement*, int, int, int64_t);
 		int (*gst_element_set_state) (GstElement*, int);
 		gboolean (*gst_element_sync_state_with_parent) (GstElement*);
+		void (*gst_event_parse_tag) (GstEvent*, GstTagList**);
 		char* (*gst_filename_to_uri) (const char*, void**);
 		GstPad* (*gst_ghost_pad_new) (const char*, GstPad*);
 		gboolean (*gst_init_check) (int*, char***, void**);
@@ -214,11 +227,14 @@ namespace lime {
 		void* (*gst_object_ref_sink) (void*);
 		void (*gst_object_unref) (void*);
 		GstCaps* (*gst_pad_get_current_caps) (GstPad*);
+		GstEvent* (*gst_pad_get_sticky_event) (GstPad*, int, unsigned int);
 		int (*gst_pad_link) (GstPad*, GstPad*);
 		gboolean (*gst_pad_query) (GstPad*, GstQuery*);
 		GstCaps* (*gst_pad_query_caps) (GstPad*, GstCaps*);
 		GstElement* (*gst_pipeline_new) (const char*);
 		void (*gst_plugin_feature_list_free) (GList*);
+		GstQuery* (*gst_query_new_seeking) (int);
+		void (*gst_query_parse_seeking) (GstQuery*, int*, gboolean*, int64_t*, int64_t*);
 		GstBuffer* (*gst_sample_get_buffer) (GstSample*);
 		GstCaps* (*gst_sample_get_caps) (GstSample*);
 		GstSegment* (*gst_sample_get_segment) (GstSample*);
@@ -227,6 +243,7 @@ namespace lime {
 		gboolean (*gst_structure_get_int) (const GstStructure*, const char*, int*);
 		const char* (*gst_structure_get_name) (const GstStructure*);
 		const char* (*gst_structure_get_string) (const GstStructure*, const char*);
+		gboolean (*gst_tag_list_get_string) (const GstTagList*, const char*, char**);
 		size_t (*gst_video_meta_api_get_type) ();
 
 	};
@@ -308,6 +325,19 @@ namespace lime {
 
 			#undef LIME_GST_REQUIRE
 
+			// Tags give the rotation, and queries whether a stream can seek, where
+			// the library has them
+			#define LIME_GST_OPTIONAL(library, name) gst.name = (decltype (gst.name))dlsym (library, #name);
+
+			LIME_GST_OPTIONAL (gstreamer, gst_element_query);
+			LIME_GST_OPTIONAL (gstreamer, gst_event_parse_tag);
+			LIME_GST_OPTIONAL (gstreamer, gst_pad_get_sticky_event);
+			LIME_GST_OPTIONAL (gstreamer, gst_query_new_seeking);
+			LIME_GST_OPTIONAL (gstreamer, gst_query_parse_seeking);
+			LIME_GST_OPTIONAL (gstreamer, gst_tag_list_get_string);
+
+			#undef LIME_GST_OPTIONAL
+
 			// Video metas describe padded frames, and are read when available
 			void* video = dlopen ("libgstvideo-1.0.so.0", RTLD_NOW | RTLD_LOCAL);
 			if (video) gst.gst_video_meta_api_get_type = (decltype (gst.gst_video_meta_api_get_type))dlsym (video, "gst_video_meta_api_get_type");
@@ -347,23 +377,24 @@ namespace lime {
 
 	// GStreamer writes the predefined colorimetries by name, and the others as
 	// range:matrix:transfer:primaries
-	static void GetColorimetry (const char* colorimetry, int* range, int* matrix) {
+	static void GetColorimetry (const char* colorimetry, int* range, int* matrix, int* transfer) {
 
-		static const struct { const char* name; int range; int matrix; } names[] = {
+		static const struct { const char* name; int range; int matrix; int transfer; } names[] = {
 
-			{ "bt2020", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020 },
-			{ "bt2020-10", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020 },
-			{ "bt2100-hlg", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020 },
-			{ "bt2100-pq", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020 },
-			{ "bt601", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT601 },
-			{ "bt709", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT709 },
-			{ "smpte240m", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_SMPTE240M },
-			{ "sRGB", GST_VIDEO_COLOR_RANGE_0_255, GST_VIDEO_COLOR_MATRIX_RGB }
+			{ "bt2020", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020, 0 },
+			{ "bt2020-10", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020, 0 },
+			{ "bt2100-hlg", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020, GST_VIDEO_TRANSFER_ARIB_STD_B67 },
+			{ "bt2100-pq", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT2020, GST_VIDEO_TRANSFER_SMPTE2084 },
+			{ "bt601", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT601, 0 },
+			{ "bt709", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_BT709, 0 },
+			{ "smpte240m", GST_VIDEO_COLOR_RANGE_16_235, GST_VIDEO_COLOR_MATRIX_SMPTE240M, 0 },
+			{ "sRGB", GST_VIDEO_COLOR_RANGE_0_255, GST_VIDEO_COLOR_MATRIX_RGB, 0 }
 
 		};
 
 		*range = GST_VIDEO_COLOR_RANGE_UNKNOWN;
 		*matrix = GST_VIDEO_COLOR_MATRIX_UNKNOWN;
+		*transfer = 0;
 
 		if (!colorimetry) return;
 
@@ -373,6 +404,7 @@ namespace lime {
 
 				*range = names[i].range;
 				*matrix = names[i].matrix;
+				*transfer = names[i].transfer;
 				return;
 
 			}
@@ -386,6 +418,9 @@ namespace lime {
 
 		for (const char* c = colorimetry; *c >= '0' && *c <= '9'; c++) *range = *range * 10 + (*c - '0');
 		for (const char* c = matrixText + 1; *c >= '0' && *c <= '9'; c++) *matrix = *matrix * 10 + (*c - '0');
+
+		const char* transferText = strchr (matrixText + 1, ':');
+		if (transferText) for (const char* c = transferText + 1; *c >= '0' && *c <= '9'; c++) *transfer = *transfer * 10 + (*c - '0');
 
 	}
 
@@ -442,6 +477,21 @@ namespace lime {
 	}
 
 
+	static bool IsSubtitle (const char* mediaType) {
+
+		static const char* prefixes[] = { "text/", "subpicture/", "closedcaption/", "application/x-ass", "application/x-ssa", "application/x-sub", "application/x-teletext", "application/x-kate", "application/x-usf", "application/ttml" };
+
+		for (size_t i = 0; i < sizeof (prefixes) / sizeof (prefixes[0]); i++) {
+
+			if (strncmp (mediaType, prefixes[i], strlen (prefixes[i])) == 0) return true;
+
+		}
+
+		return false;
+
+	}
+
+
 	static bool IsVideo (const char* mediaType) {
 
 		return strncmp (mediaType, "video/", 6) == 0 || strncmp (mediaType, "image/", 6) == 0;
@@ -459,16 +509,23 @@ namespace lime {
 			GStreamerStream ();
 			~GStreamerStream ();
 
+			void CancelSeek ();
 			void Close ();
 			GstCaps* GetCaps ();
 			double GetDuration ();
+			int GetRotation ();
 			void Interrupt ();
+			bool IsInterrupted ();
+			bool IsSeekable ();
 			bool Open (const char* uri, bool video, bool hardware, std::chrono::steady_clock::time_point deadline);
 			void Play ();
+			void PrepareSeek ();
 			VideoDecodeResult Pull (GstSample** sample);
 			bool Seek (double time);
+			void SetCaps (const char* caps);
 
 			std::atomic<bool> foundAudio;
+			std::atomic<bool> foundUnsupported;
 			GstElement* pipeline;
 			std::atomic<bool> triedHardware;
 
@@ -480,6 +537,7 @@ namespace lime {
 			static int BusSync (GstBus* bus, GstMessage* message, void* data);
 			static void ElementAdded (GstElement* pipeline, GstElement* bin, GstElement* element, void* data);
 			static void PadAdded (GstElement* decodeBin, GstPad* pad, void* data);
+			static void UnknownType (GstElement* decodeBin, GstPad* pad, GstCaps* caps, void* data);
 
 			void FlushBus ();
 			bool Preroll (std::chrono::steady_clock::time_point deadline);
@@ -490,6 +548,7 @@ namespace lime {
 			bool hardware;
 			std::atomic<bool> interrupted;
 			std::atomic<bool> linked;
+			std::atomic<bool> seeking;
 			bool video;
 
 
@@ -502,10 +561,12 @@ namespace lime {
 		bin = NULL;
 		bus = NULL;
 		foundAudio = false;
+		foundUnsupported = false;
 		hardware = false;
 		interrupted = false;
 		linked = false;
 		pipeline = NULL;
+		seeking = false;
 		triedHardware = false;
 		video = false;
 
@@ -528,6 +589,9 @@ namespace lime {
 		bool audio = IsAudio (name);
 		bool video = IsVideo (name);
 
+		// Subtitles and captions are exposed undecoded, so a missing or failing
+		// decoder for them does not stop the video
+		if (IsSubtitle (name)) return false;
 		if (!audio && !video) return true;
 
 		// Containers such as video/quicktime are demuxed further. Elementary
@@ -622,6 +686,7 @@ namespace lime {
 		}
 
 		appSink = NULL;
+		seeking = false;
 
 	}
 
@@ -667,14 +732,78 @@ namespace lime {
 	}
 
 
+	int GStreamerStream::GetRotation () {
+
+		if (!appSink || !gst.gst_pad_get_sticky_event || !gst.gst_event_parse_tag || !gst.gst_tag_list_get_string) return 0;
+
+		// Demuxers tag a stream with the turn that shows it upright, such as
+		// rotate-90 for a quarter clockwise, and the tags follow it to the sink.
+		// Flipped orientations are taken as their rotation.
+		GstPad* pad = gst.gst_element_get_static_pad (appSink, "sink");
+		int rotation = 0;
+
+		for (unsigned int i = 0; i < 4; i++) {
+
+			GstEvent* event = gst.gst_pad_get_sticky_event (pad, GST_EVENT_TAG, i);
+			if (!event) break;
+
+			GstTagList* tags = NULL;
+			char* orientation = NULL;
+			gst.gst_event_parse_tag (event, &tags);
+
+			if (tags && gst.gst_tag_list_get_string (tags, "image-orientation", &orientation)) {
+
+				const char* turn = orientation ? strstr (orientation, "rotate-") : NULL;
+				if (turn) rotation = atoi (turn + 7);
+				gst.g_free (orientation);
+
+			}
+
+			gst.gst_mini_object_unref (event);
+
+		}
+
+		gst.gst_object_unref (pad);
+		return rotation;
+
+	}
+
+
+	bool GStreamerStream::IsInterrupted () {
+
+		return interrupted;
+
+	}
+
+
+	bool GStreamerStream::IsSeekable () {
+
+		// A stream that says it cannot seek, such as a live one, is not asked to.
+		// One that does not say is tried.
+		if (!pipeline || !gst.gst_query_new_seeking || !gst.gst_element_query || !gst.gst_query_parse_seeking) return true;
+
+		GstQuery* query = gst.gst_query_new_seeking (GST_FORMAT_TIME);
+		if (!query) return true;
+
+		gboolean seekable = true;
+		if (gst.gst_element_query (pipeline, query)) gst.gst_query_parse_seeking (query, NULL, &seekable, NULL, NULL);
+		gst.gst_mini_object_unref (query);
+
+		return seekable != 0;
+
+	}
+
+
 	bool GStreamerStream::Open (const char* uri, bool video, bool hardware, std::chrono::steady_clock::time_point deadline) {
 
 		Close ();
 
 		foundAudio = false;
+		foundUnsupported = false;
 		this->hardware = hardware;
 		interrupted = false;
 		linked = false;
+		seeking = false;
 		triedHardware = false;
 		this->video = video;
 
@@ -686,12 +815,39 @@ namespace lime {
 
 		GstElement* decodeBin = AddElement (pipeline, "uridecodebin");
 		GstElement* convert = AddElement (bin, video ? "videoconvert" : "audioconvert");
+
+		// Interlaced video is deinterlaced, after conversion so the deinterlacer
+		// does not limit the formats decoders can give, and sound is resampled
+		// once its format is fixed. Progressive video and sound at that format
+		// pass through, and either is left out where its plugin is missing.
+		GstElement* adjust = AddElement (bin, video ? "deinterlace" : "audioresample");
 		appSink = AddElement (bin, "appsink");
 
-		if (!decodeBin || !convert || !appSink || !gst.gst_element_link (convert, appSink)) {
+		if (!decodeBin || !convert || !appSink) {
 
 			Close ();
 			return false;
+
+		}
+
+		if (adjust && !(gst.gst_element_link (convert, adjust) && gst.gst_element_link (adjust, appSink))) {
+
+			gst.gst_bin_remove (bin, adjust);
+			adjust = NULL;
+
+		}
+
+		if (!adjust && !gst.gst_element_link (convert, appSink)) {
+
+			Close ();
+			return false;
+
+		}
+
+		if (video && gst.g_object_class_find_property (((GTypeInstance*)convert)->g_class, "n-threads")) {
+
+			// Converting 10-bit video to 8-bit uses every core
+			gst.g_object_set (convert, "n-threads", 0, NULL);
 
 		}
 
@@ -699,8 +855,9 @@ namespace lime {
 		gst.gst_element_add_pad (bin, gst.gst_ghost_pad_new ("sink", convertPad));
 		gst.gst_object_unref (convertPad);
 
-		// audioconvert downmixes to stereo at the source rate
-		GstCaps* caps = gst.gst_caps_from_string (video ? "video/x-raw,format=NV12" : "audio/x-raw,format=S16LE,layout=interleaved,channels=[1,2]");
+		// audioconvert downmixes to stereo at the source rate. Frames are taken
+		// as NV12, or as the I420 that software decoders give, without repacking.
+		GstCaps* caps = gst.gst_caps_from_string (video ? "video/x-raw,format=(string){ NV12, I420 }" : "audio/x-raw,format=S16LE,layout=interleaved,channels=[1,2]");
 		gst.g_object_set (appSink, "caps", caps, "drop", false, "enable-last-sample", false, "max-buffers", video ? MAX_VIDEO_BUFFERS : MAX_AUDIO_BUFFERS, "sync", false, NULL);
 		gst.gst_mini_object_unref (caps);
 
@@ -709,6 +866,7 @@ namespace lime {
 		gst.g_signal_connect_data (decodeBin, "autoplug-query", (GCallback)AutoplugQuery, this, NULL, 0);
 		gst.g_signal_connect_data (decodeBin, "autoplug-select", (GCallback)AutoplugSelect, this, NULL, 0);
 		gst.g_signal_connect_data (decodeBin, "pad-added", (GCallback)PadAdded, this, NULL, 0);
+		gst.g_signal_connect_data (decodeBin, "unknown-type", (GCallback)UnknownType, this, NULL, 0);
 
 		if (!Preroll (deadline) || !linked) {
 
@@ -771,9 +929,23 @@ namespace lime {
 	}
 
 
+	void GStreamerStream::CancelSeek () {
+
+		seeking = false;
+
+	}
+
+
 	void GStreamerStream::Play () {
 
 		gst.gst_element_set_state (pipeline, GST_STATE_PLAYING);
+
+	}
+
+
+	void GStreamerStream::PrepareSeek () {
+
+		seeking = true;
 
 	}
 
@@ -783,6 +955,45 @@ namespace lime {
 		int result = gst.gst_element_set_state (pipeline, GST_STATE_PAUSED);
 
 		if (result == GST_STATE_CHANGE_FAILURE) return false;
+
+		if (result == GST_STATE_CHANGE_NO_PREROLL) {
+
+			// A live source, such as RTSP, only produces data while playing, so it
+			// plays until its stream is linked and has a format
+			if (gst.gst_element_set_state (pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) return false;
+
+			while (std::chrono::steady_clock::now () < deadline) {
+
+				GstMessage* message = gst.gst_bus_pop_filtered (bus, GST_MESSAGE_ERROR);
+
+				if (message) {
+
+					gst.gst_mini_object_unref (message);
+					return false;
+
+				}
+
+				if (linked) {
+
+					GstCaps* caps = GetCaps ();
+
+					if (caps) {
+
+						gst.gst_mini_object_unref (caps);
+						return true;
+
+					}
+
+				}
+
+				std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+			}
+
+			return false;
+
+		}
+
 		if (result != GST_STATE_CHANGE_ASYNC) return true;
 
 		// An error does not end the pending state change, so wait for either
@@ -807,6 +1018,9 @@ namespace lime {
 			if (*sample) return VIDEO_DECODE_OK;
 
 			if (interrupted) return VIDEO_DECODE_ERROR;
+
+			// A seek is waiting for this stream, which can be stalled on a network
+			if (seeking) return VIDEO_DECODE_AGAIN;
 
 			if (gst.gst_app_sink_is_eos (appSink)) return VIDEO_DECODE_END;
 
@@ -837,10 +1051,37 @@ namespace lime {
 	bool GStreamerStream::Seek (double time) {
 
 		// A flushing seek restarts a stream that stopped with an error
+		seeking = false;
 		FlushBus ();
 
 		int flags = GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_SNAP_BEFORE;
 		return gst.gst_element_seek_simple (pipeline, GST_FORMAT_TIME, flags, (int64_t)(time * GST_SECOND));
+
+	}
+
+
+	void GStreamerStream::SetCaps (const char* caps) {
+
+		GstCaps* value = gst.gst_caps_from_string (caps);
+		if (!value) return;
+
+		gst.g_object_set (appSink, "caps", value, NULL);
+		gst.gst_mini_object_unref (value);
+
+	}
+
+
+	void GStreamerStream::UnknownType (GstElement* decodeBin, GstPad* pad, GstCaps* caps, void* data) {
+
+		GStreamerStream* stream = (GStreamerStream*)data;
+
+		// A stream that nothing installed can decode, such as one in a codec
+		// whose plugin is missing
+		GstStructure* structure = GetStructure (caps);
+		const char* name = structure ? gst.gst_structure_get_name (structure) : "";
+
+		if (IsAudio (name)) stream->foundAudio = true;
+		if (stream->video ? IsVideo (name) : IsAudio (name)) stream->foundUnsupported = true;
 
 	}
 
@@ -858,11 +1099,13 @@ namespace lime {
 			virtual VideoDecodeResult DecodeVideo (VideoPlanes* planes, double* time, double* duration);
 			virtual void Interrupt ();
 			virtual bool Open (const char* path, bool hardwareDecoding, VideoStreamInfo* info);
+			virtual void PrepareSeek ();
 			virtual bool Seek (double time);
 
 		private:
 
 			void ReadVideoFormat (GstCaps* caps);
+			bool ReopenVideoInSoftware ();
 			void UnmapVideo ();
 
 			GStreamerStream audio;
@@ -870,9 +1113,16 @@ namespace lime {
 			double audioPosition;
 			int audioSampleRate;
 			VideoColorMatrix colorMatrix;
+			VideoColorTransfer colorTransfer;
 			double frameRate;
 			bool fullRange;
 			int height;
+			std::atomic<bool> interrupted;
+			double lastFrameTime;
+			double pixelAspectRatio;
+			bool planar;
+			double skipUntil;
+			std::string uri;
 			GStreamerStream video;
 			GstCaps* videoCaps;
 			GstMapInfo videoMap;
@@ -890,9 +1140,15 @@ namespace lime {
 		audioPosition = 0;
 		audioSampleRate = 0;
 		colorMatrix = VIDEO_COLOR_MATRIX_BT709;
+		colorTransfer = VIDEO_COLOR_TRANSFER_SDR;
 		frameRate = 0;
 		fullRange = false;
 		height = 0;
+		interrupted = false;
+		lastFrameTime = -1;
+		pixelAspectRatio = 0;
+		planar = false;
+		skipUntil = -1;
 		videoCaps = NULL;
 		memset (&videoMap, 0, sizeof (videoMap));
 		videoPosition = 0;
@@ -928,6 +1184,10 @@ namespace lime {
 		audioSampleRate = 0;
 		frameRate = 0;
 		height = 0;
+		lastFrameTime = -1;
+		pixelAspectRatio = 0;
+		planar = false;
+		skipUntil = -1;
 		videoPosition = 0;
 		width = 0;
 
@@ -971,8 +1231,37 @@ namespace lime {
 		if (!video.pipeline) return VIDEO_DECODE_END;
 
 		GstSample* sample = NULL;
-		VideoDecodeResult result = video.Pull (&sample);
-		if (result != VIDEO_DECODE_OK) return result;
+		VideoDecodeResult result;
+
+		while (true) {
+
+			result = video.Pull (&sample);
+
+			// A hardware decoder can fail on a stream it accepted, such as after a
+			// seek or a change of size, so decoding carries on in software
+			if (result == VIDEO_DECODE_ERROR && video.triedHardware && !video.IsInterrupted () && ReopenVideoInSoftware ()) continue;
+
+			if (result != VIDEO_DECODE_OK) return result;
+
+			// After reopening, the frames up to the last one returned are skipped
+			if (skipUntil >= 0) {
+
+				double time = GetTime (sample, videoPosition);
+
+				if (time <= skipUntil + 0.0001) {
+
+					gst.gst_mini_object_unref (sample);
+					continue;
+
+				}
+
+				skipUntil = -1;
+
+			}
+
+			break;
+
+		}
 
 		GstCaps* caps = gst.gst_sample_get_caps (sample);
 
@@ -995,32 +1284,48 @@ namespace lime {
 
 		videoSample = sample;
 
-		// Without a video meta the frame has GStreamer's default NV12 layout
+		// Without a video meta the frame has GStreamer's default layout: NV12
+		// with interleaved chroma, or I420 with a plane for each
 		GstVideoMeta* meta = videoMetaAPI ? (GstVideoMeta*)gst.gst_buffer_get_meta (buffer, videoMetaAPI) : NULL;
-		size_t yOffset = 0;
-		size_t uvOffset;
-		int yStride;
-		int uvStride;
+		size_t offsets[3] = { 0, 0, 0 };
+		int strides[3] = { 0, 0, 0 };
+		unsigned int planeCount = planar ? 3 : 2;
 
-		if (meta && meta->n_planes == 2) {
+		if (meta && meta->n_planes == planeCount) {
 
-			yOffset = meta->offset[0];
-			uvOffset = meta->offset[1];
-			yStride = meta->stride[0];
-			uvStride = meta->stride[1];
+			for (unsigned int i = 0; i < planeCount; i++) {
+
+				offsets[i] = meta->offset[i];
+				strides[i] = meta->stride[i];
+
+			}
+
+		} else if (planar) {
+
+			strides[0] = (width + 3) & ~3;
+			strides[1] = ((((width + 1) & ~1) / 2) + 3) & ~3;
+			strides[2] = strides[1];
+			offsets[1] = (size_t)strides[0] * ((height + 1) & ~1);
+			offsets[2] = offsets[1] + (size_t)strides[1] * (((height + 1) & ~1) / 2);
 
 		} else {
 
-			yStride = (width + 3) & ~3;
-			uvStride = yStride;
-			uvOffset = (size_t)yStride * ((height + 1) & ~1);
+			strides[0] = (width + 3) & ~3;
+			strides[1] = strides[0];
+			offsets[1] = (size_t)strides[0] * ((height + 1) & ~1);
 
 		}
 
 		int chromaHeight = (height + 1) / 2;
-		int chromaRow = ((width + 1) / 2) * 2;
+		int chromaRow = planar ? (width + 1) / 2 : ((width + 1) / 2) * 2;
+		bool valid = width > 0 && height > 0 && strides[0] >= width && strides[1] >= chromaRow
+			&& offsets[0] + (size_t)strides[0] * (height - 1) + width <= videoMap.size
+			&& offsets[1] + (size_t)strides[1] * (chromaHeight - 1) + chromaRow <= videoMap.size;
 
-		if (width <= 0 || height <= 0 || yStride < width || uvStride < chromaRow || yOffset + (size_t)yStride * (height - 1) + width > videoMap.size || uvOffset + (size_t)uvStride * (chromaHeight - 1) + chromaRow > videoMap.size) {
+		// Both chroma planes share a stride
+		if (planar) valid = valid && strides[2] == strides[1] && offsets[2] + (size_t)strides[2] * (chromaHeight - 1) + chromaRow <= videoMap.size;
+
+		if (!valid) {
 
 			UnmapVideo ();
 			return VIDEO_DECODE_ERROR;
@@ -1029,17 +1334,22 @@ namespace lime {
 
 		planes->colorMatrix = colorMatrix;
 		planes->fullRange = fullRange;
+		planes->transfer = colorTransfer;
 		planes->width = width;
 		planes->height = height;
-		planes->y = videoMap.data + yOffset;
-		planes->yStride = yStride;
-		planes->u = videoMap.data + uvOffset;
-		planes->v = planes->u + 1;
-		planes->uvStride = uvStride;
-		planes->uvPixelStride = 2;
+		planes->y = videoMap.data + offsets[0];
+		planes->yStride = strides[0];
+		planes->u = videoMap.data + offsets[1];
+		planes->v = planar ? videoMap.data + offsets[2] : planes->u + 1;
+		planes->uvStride = strides[1];
+		planes->uvPixelStride = planar ? 1 : 2;
 
+		// A frame without a timestamp follows the one before it. Without a
+		// duration or frame rate either, frames are spaced as at 30 fps, as frames
+		// that all had the same time would play as fast as they are decoded.
 		*time = GetTime (sample, videoPosition);
-		*duration = buffer->duration != GST_CLOCK_TIME_NONE ? (double)buffer->duration / GST_SECOND : (frameRate > 0 ? 1.0 / frameRate : 0);
+		*duration = buffer->duration != GST_CLOCK_TIME_NONE ? (double)buffer->duration / GST_SECOND : (frameRate > 0 ? 1.0 / frameRate : 1.0 / 30);
+		lastFrameTime = *time;
 		videoPosition = *time + *duration;
 
 		return VIDEO_DECODE_OK;
@@ -1049,6 +1359,9 @@ namespace lime {
 
 	void GStreamerVideoBackend::Interrupt () {
 
+		// Kept for the backend too, as reopening the video in software starts a
+		// new stream, which would not know it was interrupted
+		interrupted = true;
 		audio.Interrupt ();
 		video.Interrupt ();
 
@@ -1058,10 +1371,11 @@ namespace lime {
 	bool GStreamerVideoBackend::Open (const char* path, bool hardwareDecoding, VideoStreamInfo* info) {
 
 		Close ();
+		interrupted = false;
 
 		if (!path || !path[0]) return false;
 
-		std::string uri = GetURI (path);
+		uri = GetURI (path);
 		if (uri.empty ()) return false;
 
 		// The pipelines share one timeout, so a stalled source fails once. The
@@ -1080,6 +1394,11 @@ namespace lime {
 			if (width <= 0 || height <= 0) video.Close ();
 
 		}
+
+		// A stream that was found but cannot be decoded, such as one in a codec
+		// whose plugin is not installed
+		info->videoUnsupported = !video.pipeline && video.foundUnsupported;
+		info->audioUnsupported = video.foundAudio && !audio.pipeline && audio.foundUnsupported;
 
 		if (audio.pipeline) {
 
@@ -1101,25 +1420,46 @@ namespace lime {
 				audioChannels = 0;
 				audioSampleRate = 0;
 
+			} else {
+
+				// The format is kept from here on, so a stream that changes rate or
+				// channels, such as a broadcast between programmes, is converted
+				char caps[128];
+				snprintf (caps, sizeof (caps), "audio/x-raw,format=S16LE,layout=interleaved,channels=%d,rate=%d", audioChannels, audioSampleRate);
+				audio.SetCaps (caps);
+
 			}
 
 		}
 
 		if (!video.pipeline && !audio.pipeline) return false;
 
+		double duration = video.pipeline ? video.GetDuration () : 0;
+		if (duration <= 0 && audio.pipeline) duration = audio.GetDuration ();
+
 		info->audioChannels = audioChannels;
 		info->audioSampleRate = audioSampleRate;
-		info->duration = video.pipeline ? video.GetDuration () : audio.GetDuration ();
+		info->duration = duration;
 		info->frameRate = video.pipeline ? frameRate : 0;
 		info->hasAudio = (audio.pipeline != NULL);
 		info->hasVideo = (video.pipeline != NULL);
 		info->height = info->hasVideo ? height : 0;
+		info->pixelAspectRatio = info->hasVideo ? pixelAspectRatio : 0;
+		info->rotation = info->hasVideo ? video.GetRotation () : 0;
 		info->width = info->hasVideo ? width : 0;
 
 		if (video.pipeline) video.Play ();
 		if (audio.pipeline) audio.Play ();
 
 		return true;
+
+	}
+
+
+	void GStreamerVideoBackend::PrepareSeek () {
+
+		audio.PrepareSeek ();
+		video.PrepareSeek ();
 
 	}
 
@@ -1132,6 +1472,13 @@ namespace lime {
 		gst.gst_structure_get_int (structure, "width", &width);
 		gst.gst_structure_get_int (structure, "height", &height);
 
+		const char* format = gst.gst_structure_get_string (structure, "format");
+		planar = format && strcmp (format, "I420") == 0;
+
+		int pixelWidth = 0;
+		int pixelHeight = 0;
+		pixelAspectRatio = gst.gst_structure_get_fraction (structure, "pixel-aspect-ratio", &pixelWidth, &pixelHeight) && pixelWidth > 0 && pixelHeight > 0 ? (double)pixelWidth / pixelHeight : 0;
+
 		int numerator = 0;
 		int denominator = 0;
 
@@ -1143,7 +1490,11 @@ namespace lime {
 
 		int range;
 		int matrix;
-		GetColorimetry (gst.gst_structure_get_string (structure, "colorimetry"), &range, &matrix);
+		int transfer;
+		GetColorimetry (gst.gst_structure_get_string (structure, "colorimetry"), &range, &matrix, &transfer);
+
+		// HDR is tone mapped by VideoDecoder, as no element here can
+		colorTransfer = transfer == GST_VIDEO_TRANSFER_SMPTE2084 ? VIDEO_COLOR_TRANSFER_PQ : (transfer == GST_VIDEO_TRANSFER_ARIB_STD_B67 ? VIDEO_COLOR_TRANSFER_HLG : VIDEO_COLOR_TRANSFER_SDR);
 
 		switch (matrix) {
 
@@ -1159,9 +1510,52 @@ namespace lime {
 	}
 
 
+	bool GStreamerVideoBackend::ReopenVideoInSoftware () {
+
+		std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now () + std::chrono::seconds (SOFTWARE_REOPEN_SECONDS);
+
+		UnmapVideo ();
+
+		if (interrupted || !video.Open (uri.c_str (), true, false, deadline)) return false;
+
+		// Closing can have begun while the new stream opened
+		if (interrupted) {
+
+			video.Interrupt ();
+			return false;
+
+		}
+
+		// Decoding resumes from the keyframe before the last frame returned
+		if (lastFrameTime >= 0) {
+
+			video.Seek (lastFrameTime);
+			skipUntil = lastFrameTime;
+
+		}
+
+		video.Play ();
+		return true;
+
+	}
+
+
 	bool GStreamerVideoBackend::Seek (double time) {
 
 		UnmapVideo ();
+
+		// A stream that cannot seek, such as a live one, is left playing, rather
+		// than one stream moving without the other
+		if ((video.pipeline && !video.IsSeekable ()) || (audio.pipeline && !audio.IsSeekable ())) {
+
+			audio.CancelSeek ();
+			video.CancelSeek ();
+			return false;
+
+		}
+
+		lastFrameTime = -1;
+		skipUntil = -1;
 
 		bool success = true;
 
