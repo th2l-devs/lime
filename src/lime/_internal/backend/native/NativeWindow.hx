@@ -1,5 +1,6 @@
 package lime._internal.backend.native;
 
+import haxe.Int64;
 import haxe.io.Bytes;
 import lime._internal.backend.native.NativeCFFI;
 import lime.app.Application;
@@ -28,6 +29,7 @@ import lime.ui.Menu;
 import lime.ui.MenuItem;
 import lime.ui.MouseCursor;
 import lime.ui.Window;
+import lime.ui.WindowHandle;
 import lime.utils.UInt8Array;
 
 #if !lime_debug
@@ -35,6 +37,7 @@ import lime.utils.UInt8Array;
 @:noDebug
 #end
 @:access(lime._internal.backend.native.NativeCFFI)
+@:access(lime.ui.WindowHandle)
 @:access(lime._internal.backend.native.NativeOpenGLRenderContext)
 @:access(lime.app.Application)
 @:access(lime.graphics.cairo.Cairo)
@@ -130,6 +133,11 @@ class NativeWindow
 
 		var height = Reflect.hasField(attributes, "height") ? attributes.height : #if desktop 600 #else 0 #end;
 		#if (!macro && lime_cffi)
+		// A new context shares textures, buffers and shaders with the one current as it is
+		// made, so that is the main window's
+		var mainWindow = getMainOpenGLWindow(parent.application, parent);
+		if (mainWindow != null) mainWindow.__backend.contextMakeCurrent();
+
 		handle = NativeCFFI.lime_window_create(parent.application.__backend.handle, width, height, flags, title);
 
 		if (handle == null)
@@ -146,6 +154,8 @@ class NativeWindow
 
 		parent.id = NativeCFFI.lime_window_get_id(handle);
 		parent.__scale = NativeCFFI.lime_window_get_scale(handle);
+		// Transparency can be refused, as with Vulkan or without a compositor
+		parent.transparent = NativeCFFI.lime_window_get_transparent(handle);
 
 		var context = new RenderContext();
 		context.window = parent;
@@ -189,6 +199,9 @@ class NativeWindow
 		context.attributes = contextAttributes;
 		renderAttributes = contextAttributes;
 		parent.context = context;
+
+		// Outside of rendering, the main window's context stays current
+		if (mainWindow != null) mainWindow.__backend.contextMakeCurrent();
 
 		frameRate = resolvedFrameRate;
 		#end
@@ -273,6 +286,10 @@ class NativeWindow
 					#end
 
 					handle = null;
+
+					// Closing the window whose context was current leaves none current
+					var mainWindow = getMainOpenGLWindow(parent.application, parent);
+					if (mainWindow != null) mainWindow.__backend.contextMakeCurrent();
 				}
 			}
 			else
@@ -285,6 +302,9 @@ class NativeWindow
 	public function contextFlip():Void
 	{
 		#if (!macro && lime_cffi)
+		// The window may have been closed while it rendered
+		if (handle == null) return;
+
 		if (!useHardware)
 		{
 			#if lime_cairo
@@ -416,6 +436,21 @@ class NativeWindow
 				{
 					__focusedQuery = null;
 				}
+			}
+		}
+		#end
+		return null;
+	}
+
+	public function getNativeHandle():WindowHandle
+	{
+		#if (!macro && lime_cffi)
+		if (handle != null)
+		{
+			var info:Dynamic = NativeCFFI.lime_window_get_native_handle(handle);
+			if (info != null)
+			{
+				return new WindowHandle(info.type, Int64.make(info.window.high, info.window.low), Int64.make(info.display.high, info.display.low));
 			}
 		}
 		#end
@@ -576,10 +611,41 @@ class NativeWindow
 		return null;
 	}
 
+	public function contextMakeCurrent():Void
+	{
+		#if (!macro && lime_cffi)
+		if (handle != null) NativeCFFI.lime_window_context_make_current(handle);
+		#end
+	}
+
+	/**
+		The window whose OpenGL context is current outside of rendering: the main
+		window, or the first other window open with one.
+	**/
+	public static function getMainOpenGLWindow(application:Application, except:Window = null):Window
+	{
+		if (hasOpenGLContext(application.window, except)) return application.window;
+
+		for (window in application.__windows)
+		{
+			if (hasOpenGLContext(window, except)) return window;
+		}
+
+		return null;
+	}
+
+	private static function hasOpenGLContext(window:Window, except:Window):Bool
+	{
+		return window != null && window != except && window.__backend.handle != null && window.context != null
+			&& (window.context.type == OPENGL || window.context.type == OPENGLES);
+	}
+
 	public function render():Void
 	{
 		#if (!macro && lime_cffi)
-		NativeCFFI.lime_window_context_make_current(handle);
+		if (handle == null) return;
+
+		contextMakeCurrent();
 		if (!useHardware)
 		{
 			#if lime_cairo

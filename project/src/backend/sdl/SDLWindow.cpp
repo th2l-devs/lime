@@ -60,6 +60,7 @@
 #endif
 
 
+
 namespace lime {
 
 
@@ -119,6 +120,27 @@ namespace lime {
 		sdlRenderer = 0;
 		sdlWindow = 0;
 		context = 0;
+
+		if (useVulkan) {
+
+			// Without Vulkan in this build, or a Vulkan loader on this system, the window is made for
+			// OpenGL instead, as no window could be made for Vulkan
+			#ifdef LIME_VULKAN
+			bool available = SDL_Vulkan_LoadLibrary (NULL);
+			if (available) SDL_Vulkan_UnloadLibrary ();
+			#else
+			bool available = false;
+			#endif
+
+			if (!available) {
+
+				SDL_LogWarn (SDL_LOG_CATEGORY_RENDER, "Vulkan is not available, so the window uses OpenGL");
+				useVulkan = false;
+				flags &= ~WINDOW_FLAG_VULKAN;
+
+			}
+
+		}
 
 		contextWidth = 0;
 		contextHeight = 0;
@@ -279,7 +301,21 @@ namespace lime {
 
 		if (flags & WINDOW_FLAG_HARDWARE) {
 
+			// Windows share textures, buffers and shaders through the context current as
+			// one is made, which Lime keeps to the main window's
+			bool shareContext = SDL_GL_GetCurrentContext () != NULL;
+			SDL_GL_SetAttribute (SDL_GL_SHARE_WITH_CURRENT_CONTEXT, shareContext ? 1 : 0);
 			context = SDL_GL_CreateContext (sdlWindow);
+
+			if (!context && shareContext) {
+
+				SDL_LogWarn (SDL_LOG_CATEGORY_VIDEO, "The window's OpenGL context could not share with the other windows: %s", SDL_GetError ());
+				SDL_GL_SetAttribute (SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
+				context = SDL_GL_CreateContext (sdlWindow);
+
+			}
+
+			SDL_GL_SetAttribute (SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
 
 			#if defined (IPHONE) || defined (APPLETV)
 			if (!context) {
@@ -1034,6 +1070,58 @@ namespace lime {
 		}
 
 		return minimized;
+
+	}
+
+
+	int SDLWindow::GetNativeHandle (void** handle, void** display) {
+
+		return GetNativeHandle (sdlWindow, handle, display);
+
+	}
+
+
+	int SDLWindow::GetNativeHandle (SDL_Window* window, void** handle, void** display) {
+
+		*handle = NULL;
+		*display = NULL;
+
+		if (!window) return WINDOW_HANDLE_NONE;
+
+		SDL_PropertiesID props = SDL_GetWindowProperties (window);
+
+		#if defined (SDL_PLATFORM_WIN32)
+		*handle = SDL_GetPointerProperty (props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+		if (*handle) return WINDOW_HANDLE_WINDOWS;
+		#elif defined (SDL_PLATFORM_MACOS)
+		*handle = SDL_GetPointerProperty (props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+		if (*handle) return WINDOW_HANDLE_COCOA;
+		#elif defined (SDL_PLATFORM_IOS) || defined (SDL_PLATFORM_TVOS)
+		*handle = SDL_GetPointerProperty (props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
+		if (*handle) return WINDOW_HANDLE_UIKIT;
+		#elif defined (SDL_PLATFORM_ANDROID)
+		*handle = SDL_GetPointerProperty (props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+		if (*handle) return WINDOW_HANDLE_ANDROID;
+		#else
+		*handle = SDL_GetPointerProperty (props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+		if (*handle) {
+
+			*display = SDL_GetPointerProperty (props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
+			return WINDOW_HANDLE_WAYLAND;
+
+		}
+
+		Sint64 x11Window = SDL_GetNumberProperty (props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+		if (x11Window) {
+
+			*handle = (void*)(uintptr_t)x11Window;
+			*display = SDL_GetPointerProperty (props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+			return WINDOW_HANDLE_X11;
+
+		}
+		#endif
+
+		return WINDOW_HANDLE_NONE;
 
 	}
 

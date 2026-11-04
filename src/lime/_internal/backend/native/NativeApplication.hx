@@ -61,6 +61,7 @@ class NativeApplication
 	private var gamepadEventInfo = new GamepadEventInfo();
 	private var joystickEventInfo = new JoystickEventInfo();
 	private var keyEventInfo = new KeyEventInfo();
+	private var localSocketEventInfo = new LocalSocketEventInfo();
 	private var menuEventInfo = new MenuEventInfo();
 	private var orientationEventInfo = new OrientationEventInfo();
 
@@ -69,6 +70,12 @@ class NativeApplication
 		is created, before any window is. Set by ApplicationMain.
 	**/
 	@:noCompletion private static var __allowHighDPI:Bool = false;
+
+	/**
+		Reads and writes every WebSocket, once a frame. Set by NativeWebSocket
+		once there is one, so an application without any compiles none of it.
+	**/
+	@:noCompletion private static var __updateWebSockets:Void->Void = null;
 	private var mouseEventInfo = new MouseEventInfo();
 	private var renderEventInfo = new RenderEventInfo(RENDER);
 	private var sensorEventInfo = new SensorEventInfo();
@@ -146,6 +153,7 @@ class NativeApplication
 		NativeCFFI.lime_gamepad_event_manager_register(handleGamepadEvent, gamepadEventInfo);
 		NativeCFFI.lime_joystick_event_manager_register(handleJoystickEvent, joystickEventInfo);
 		NativeCFFI.lime_key_event_manager_register(handleKeyEvent, keyEventInfo);
+		NativeCFFI.lime_local_socket_event_manager_register(handleLocalSocketEvent, localSocketEventInfo);
 		NativeCFFI.lime_menu_event_manager_register(handleMenuEvent, menuEventInfo);
 		NativeCFFI.lime_mouse_event_manager_register(handleMouseEvent, mouseEventInfo);
 		NativeCFFI.lime_render_event_manager_register(handleRenderEvent, renderEventInfo);
@@ -161,9 +169,8 @@ class NativeApplication
 			function() runModalCallback(handleWindowEvent), rethrowModalException);
 		#end
 
-		#if (ios || android)
+		// Also carries the display connect, disconnect and move events of desktop targets
 		NativeCFFI.lime_orientation_event_manager_register(handleOrientationEvent, orientationEventInfo);
-		#end
 		#if (ios || android || tvos)
 		NativeCFFI.lime_sensor_event_manager_register(handleSensorEvent, sensorEventInfo);
 		#end
@@ -292,6 +299,8 @@ class NativeApplication
 				#if lime_telemetry
 				lime.system.Telemetry.beginFrame(applicationEventInfo.deltaTime);
 				#end
+				// WebSockets are read and written once a frame, once there are any
+				if (__updateWebSockets != null) __updateWebSockets();
 
 				parent.onUpdate.dispatch(applicationEventInfo.deltaTime);
 
@@ -510,6 +519,32 @@ class NativeApplication
 		}
 	}
 
+	private function handleLocalSocketEvent():Void
+	{
+		switch (localSocketEventInfo.type)
+		{
+			case LOCAL_SOCKET_ACCEPT:
+				var server = NativeLocalServer.getServer(localSocketEventInfo.id);
+				if (server != null) server.handleAccept();
+
+			case LOCAL_SOCKET_CLOSE:
+				var socket = NativeLocalSocket.getSocket(localSocketEventInfo.id);
+				if (socket != null) socket.handleClose();
+
+			case LOCAL_SOCKET_CONNECT:
+				var socket = NativeLocalSocket.getSocket(localSocketEventInfo.id);
+				if (socket != null) socket.handleConnect();
+
+			case LOCAL_SOCKET_DATA:
+				var socket = NativeLocalSocket.getSocket(localSocketEventInfo.id);
+				if (socket != null) socket.handleData(localSocketEventInfo.length);
+
+			case LOCAL_SOCKET_ERROR:
+				var socket = NativeLocalSocket.getSocket(localSocketEventInfo.id);
+				if (socket != null) socket.handleError(localSocketEventInfo.error);
+		}
+	}
+
 	private function handleMenuEvent():Void
 	{
 		switch (menuEventInfo.type)
@@ -673,6 +708,14 @@ class NativeApplication
 						if (window.context != null) window.onRenderContextRestored.dispatch(window.context);
 					}
 			}
+		}
+
+		if (renderEventInfo.type == RENDER)
+		{
+			// Each window made its own context current, so the main one is made current again
+			// for what the application does with OpenGL until the next render
+			var mainWindow = NativeWindow.getMainOpenGLWindow(parent);
+			if (mainWindow != null) mainWindow.__backend.contextMakeCurrent();
 		}
 	}
 
@@ -1078,6 +1121,36 @@ class NativeApplication
 {
 	var KEY_DOWN = 0;
 	var KEY_UP = 1;
+}
+
+@:keep /*private*/ class LocalSocketEventInfo
+{
+	public var error:Int;
+	public var id:Int;
+	public var length:Int;
+	public var type:LocalSocketEventType;
+
+	public function new(type:LocalSocketEventType = null, id:Int = 0, length:Int = 0, error:Int = 0)
+	{
+		this.type = type;
+		this.id = id;
+		this.length = length;
+		this.error = error;
+	}
+
+	public function clone():LocalSocketEventInfo
+	{
+		return new LocalSocketEventInfo(type, id, length, error);
+	}
+}
+
+#if (haxe_ver >= 4.0) private enum #else @:enum private #end abstract LocalSocketEventType(Int)
+{
+	var LOCAL_SOCKET_ACCEPT = 0;
+	var LOCAL_SOCKET_CLOSE = 1;
+	var LOCAL_SOCKET_CONNECT = 2;
+	var LOCAL_SOCKET_DATA = 3;
+	var LOCAL_SOCKET_ERROR = 4;
 }
 
 @:keep /*private*/ class MenuEventInfo

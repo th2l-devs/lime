@@ -144,6 +144,16 @@ class Window
 	public var mouseRect(get, set):Rectangle;
 
 	/**
+		The system's own window behind this one, for native code that works with
+		it directly, or `null` where there is none: on web targets, and once the
+		window has closed.
+
+		Read it on the main thread when it is needed, and do not keep it. On
+		Android the window changes whenever the surface is recreated.
+	**/
+	public var nativeHandle(get, never):WindowHandle;
+
+	/**
 		Whether keys the system would otherwise take, such as Alt+Tab or the
 		Windows key, go to this window while it has the focus.
 
@@ -223,17 +233,41 @@ class Window
 	public var onShow(default, null) = new Event<Void->Void>();
 	public var onTextEdit(default, null) = new Event<String->Int->Int->Void>();
 	public var onTextInput(default, null) = new Event<String->Void>();
+
+	/**
+		Fired when `scale` changes, as when the window moves to a display with
+		another scale, or the display's scale is changed. On native targets it can
+		be left out with `lime_disable_window_scale_change`.
+	**/
 	public var onDisplayScaleChange(default, null) = new Event<Void->Void>();
+
 	public var opacity(get, set):Float;
 	public var parameters:Dynamic;
 	public var resizable(get, set):Bool;
+
+	/**
+		The ratio of the window's pixels to its size in points, from the
+		display it is on.
+	**/
 	public var scale(get, null):Float;
 	#if (!lime_doc_gen || flash || openfl)
 	public var stage(default, null):Stage;
 	#end
 	public var textInputEnabled(get, set):Bool;
 	public var title(get, set):String;
+	/**
+		Whether the window was made transparent, where pixels drawn with alpha
+		below 1 show what is behind it. It is asked for with the `transparent`
+		window attribute, and the window is made opaque where that cannot be
+		done: with Vulkan, without a compositing window manager on Linux, and
+		on AIR. In a browser, the canvas is transparent.
+	**/
 	public var transparent(default, null):Bool;
+
+	/**
+		Whether the window stays above other windows. It is kept on desktop
+		native targets and AIR; elsewhere it stays `false`.
+	**/
 	public var alwaysOnTop(get, set):Bool;
 	public var visible(get, set):Bool;
 	public var vsync(get, set):Bool;
@@ -298,6 +332,7 @@ class Window
 				"minWidth": {get: p.get_minWidth, set: p.set_minWidth},
 				"mouseLock": {get: p.get_mouseLock, set: p.set_mouseLock},
 				"mouseRect": {get: p.get_mouseRect, set: p.set_mouseRect},
+				"nativeHandle": {get: p.get_nativeHandle},
 				"keyboardGrab": {get: p.get_keyboardGrab, set: p.set_keyboardGrab},
 
 				"resizable": {get: p.get_resizable, set: p.set_resizable},
@@ -337,6 +372,7 @@ class Window
 		__resizable = Reflect.hasField(__attributes, "resizable") ? __attributes.resizable : false;
 		__maximized = Reflect.hasField(__attributes, "maximized") ? __attributes.maximized : false;
 		__minimized = Reflect.hasField(__attributes, "minimized") ? __attributes.minimized : false;
+		__alwaysOnTop = Reflect.hasField(__attributes, "alwaysOnTop") ? __attributes.alwaysOnTop : false;
 		transparent = Reflect.hasField(__attributes, "transparent") ? __attributes.transparent : false;
 		id = -1;
 		__backend = new WindowBackend(this);
@@ -2888,7 +2924,7 @@ class Window
 
 	@:noCompletion private function set_maxWidth(value:Int):Int
 	{
-		setMinSize(value, __maxHeight);
+		setMaxSize(value, __maxHeight);
 		return __maxWidth;
 	}
 
@@ -2967,6 +3003,11 @@ class Window
 	@:noCompletion private function get_mouseRect():Rectangle
 	{
 		return __backend.getMouseRect();
+	}
+
+	@:noCompletion private function get_nativeHandle():WindowHandle
+	{
+		return __backend.getNativeHandle();
 	}
 
 	@:noCompletion private function set_mouseRect(value:Rectangle):Rectangle

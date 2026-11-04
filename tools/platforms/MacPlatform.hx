@@ -411,6 +411,11 @@ class MacPlatform extends PlatformTarget
 		context.BUILD_DIR = project.app.path + "/mac" + dirSuffix.toLowerCase();
 		context.CATEGORY_TYPE = project.config.getString("mac.category_type", "public.app-category.entertainment");
 
+		if (project.config.exists("mac.microphone-usage-description"))
+		{
+			context.MAC_MICROPHONE_USAGE_DESCRIPTION = project.config.getString("mac.microphone-usage-description");
+		}
+
 		return context;
 	}
 
@@ -649,7 +654,8 @@ class MacPlatform extends PlatformTarget
 	private function copyAndFixHashLinkHomebrewDependencies():Void
 	{
 		var limeDirectory = Haxelib.getPath(new Haxelib("lime"), true);
-		var bindir = "Mac64";
+		// HashLink is only built for Apple Silicon when -arm64 asks for it
+		var bindir = targetFlags.exists("arm64") ? "MacArm64" : "Mac64";
 		var bundledHLDirectory = Path.combine(limeDirectory, 'templates/bin/hl/$bindir');
 		if (!FileSystem.exists(bundledHLDirectory))
 		{
@@ -664,7 +670,8 @@ class MacPlatform extends PlatformTarget
 
 		// these are the known directories where Homebrew installs its dependencies
 		// we may need to add more in the future, but this seems to be enough for now
-		var homebrewDirs = ["/usr/local/opt/", "/usr/local/Cellar/"];
+		// (/usr/local for Intel, /opt/homebrew for Apple Silicon)
+		var homebrewDirs = ["/usr/local/opt/", "/usr/local/Cellar/", "/opt/homebrew/opt/", "/opt/homebrew/Cellar/"];
 
 		// first, collect all executables, hdlls, and dylibs that were built
 		// by BuildHashlink.xml

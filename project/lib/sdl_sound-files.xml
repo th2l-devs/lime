@@ -1,7 +1,8 @@
 <xml>
 
     <set name="SDLSOUND_DECODER_MODPLUG" value="1" />
-    <set name="SDLSOUND_DECODER_MIDI" value="1" />
+    <!-- TiMidity is under the LGPL or the Perl Artistic License, so like SDL_sound, -->
+    <!-- leave MIDI out unless SDLSOUND_DECODER_MIDI is defined -->
     <set name="SDLSOUND_DECODER_COREAUDIO" value="1" if="mac || ios || tvos" />
 
     <files id="native-toolkit-sdl_sound-depends">
@@ -56,6 +57,7 @@
         <compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl_sound/src/" />
         <compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl_sound/include/" />
         <compilerflag value="-I${NATIVE_TOOLKIT_PATH}/sdl_sound/include/SDL3_sound/" />
+        <compilerflag value="-DSOUND_SUPPORTS_MIDI=0" unless="SDLSOUND_DECODER_MIDI" />
 
         <section if="winrt">
 

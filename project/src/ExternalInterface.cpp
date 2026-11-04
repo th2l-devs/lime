@@ -22,6 +22,7 @@
 #include <graphics/RenderEvent.h>
 #ifdef LIME_VULKAN
 #include <graphics/vulkan/VKRenderer.h>
+#include <SDL_log.h>
 #endif
 #include <media/containers/OGG.h>
 #include <media/containers/WAV.h>
@@ -90,13 +91,8 @@ namespace lime {
 	static void LogVulkanNativeBootstrap (const char* message) {
 
 #ifdef LIME_VULKAN
-		::FILE* file = ::fopen ("lime-vulkan-native.log", "a");
-		if (file) {
-
-			::fprintf (file, "%s\n", message ? message : "<null>");
-			::fclose (file);
-
-		}
+		// Shown with SDL_LOGGING=render=debug
+		SDL_LogDebug (SDL_LOG_CATEGORY_RENDER, "%s", message ? message : "<null>");
 #endif
 
 	}
@@ -3119,7 +3115,8 @@ namespace lime {
 		Font *font = (Font*)val_data (fontHandle);
 		Bytes bytes (data);
 
-		if (font->RenderGlyphWithFlags (index, loadFlags, &bytes, 0, subpixelX)) {
+		// Without load flags (-1), the glyph is rendered as lime_font_render_glyph renders it
+		if (loadFlags < 0 ? font->RenderGlyph (index, &bytes, 0, subpixelX) : font->RenderGlyphWithFlags (index, loadFlags, &bytes, 0, subpixelX)) {
 
 			return bytes.Value (data);
 
@@ -3170,7 +3167,7 @@ namespace lime {
 		#ifdef LIME_FREETYPE
 		Font *font = (Font*)fontHandle->ptr;
 
-		if (font->RenderGlyphWithFlags (index, loadFlags, data, 0, subpixelX)) {
+		if (loadFlags < 0 ? font->RenderGlyph (index, data, 0, subpixelX) : font->RenderGlyphWithFlags (index, loadFlags, data, 0, subpixelX)) {
 
 			return data;
 
@@ -4635,6 +4632,31 @@ namespace lime {
 	}
 
 
+	value lime_menu_get_application_menu (value data) {
+
+		std::vector<unsigned char> menu;
+		if (!Menu::GetApplicationMenu (&menu)) return alloc_null ();
+
+		Bytes bytes (data);
+		bytes.Resize ((int)menu.size ());
+		if (!menu.empty ()) memcpy (bytes.b, &menu[0], menu.size ());
+		return bytes.Value (data);
+
+	}
+
+
+	HL_PRIM Bytes* HL_NAME(hl_menu_get_application_menu) (Bytes* data) {
+
+		std::vector<unsigned char> menu;
+		if (!data || !Menu::GetApplicationMenu (&menu)) return NULL;
+
+		data->Resize ((int)menu.size ());
+		if (!menu.empty ()) memcpy (data->b, &menu[0], menu.size ());
+		return data;
+
+	}
+
+
 	int lime_menu_get_support () {
 
 		return Menu::GetSupport ();
@@ -5123,6 +5145,26 @@ namespace lime {
 		#endif
 
 		return 0;
+
+	}
+
+
+	bool lime_system_get_secure_random_bytes (value buffer, int offset, int length) {
+
+		Bytes bytes (buffer);
+
+		if (offset < 0 || length < 0 || (length > 0 && (!bytes.b || offset > bytes.length || length > bytes.length - offset))) return false;
+
+		return System::GetSecureRandomBytes (length > 0 ? bytes.b + offset : NULL, length);
+
+	}
+
+
+	HL_PRIM bool HL_NAME(hl_system_get_secure_random_bytes) (Bytes* buffer, int offset, int length) {
+
+		if (offset < 0 || length < 0 || (length > 0 && (!buffer || !buffer->b || offset > buffer->length || length > buffer->length - offset))) return false;
+
+		return System::GetSecureRandomBytes (length > 0 ? buffer->b + offset : NULL, length);
 
 	}
 
@@ -14276,6 +14318,50 @@ namespace lime {
 	}
 
 
+	value lime_window_get_native_handle (value window) {
+
+		Window* targetWindow = (Window*)val_data (window);
+		void* handle;
+		void* display;
+		int type = targetWindow->GetNativeHandle (&handle, &display);
+
+		if (type == WINDOW_HANDLE_NONE) {
+
+			return alloc_null ();
+
+		}
+
+		value result = alloc_empty_object ();
+		alloc_field (result, val_id ("type"), alloc_int (type));
+		alloc_field (result, val_id ("window"), CreateVulkanHandleValue ((uint64_t)(uintptr_t)handle));
+		alloc_field (result, val_id ("display"), CreateVulkanHandleValue ((uint64_t)(uintptr_t)display));
+		return result;
+
+	}
+
+
+	HL_PRIM vdynamic* HL_NAME(hl_window_get_native_handle) (HL_CFFIPointer* window) {
+
+		Window* targetWindow = (Window*)window->ptr;
+		void* handle;
+		void* display;
+		int type = targetWindow->GetNativeHandle (&handle, &display);
+
+		if (type == WINDOW_HANDLE_NONE) {
+
+			return NULL;
+
+		}
+
+		vdynamic* result = (vdynamic*)hl_alloc_dynobj ();
+		hl_dyn_seti (result, hl_hash_utf8 ("type"), &hlt_i32, type);
+		hl_dyn_setp (result, hl_hash_utf8 ("window"), &hlt_dynobj, HLCreateVulkanHandleValue ((uint64_t)(uintptr_t)handle));
+		hl_dyn_setp (result, hl_hash_utf8 ("display"), &hlt_dynobj, HLCreateVulkanHandleValue ((uint64_t)(uintptr_t)display));
+		return result;
+
+	}
+
+
 	void lime_window_set_keyboard_grab (value window, bool keyboardGrab) {
 
 		Window* targetWindow = (Window*)val_data (window);
@@ -14695,6 +14781,7 @@ namespace lime {
 	DEFINE_PRIME2 (lime_lzma_compress);
 	DEFINE_PRIME2 (lime_lzma_decompress);
 	DEFINE_PRIME2v (lime_menu_event_manager_register);
+	DEFINE_PRIME1 (lime_menu_get_application_menu);
 	DEFINE_PRIME0 (lime_menu_get_support);
 	DEFINE_PRIME2v (lime_mouse_event_manager_register);
 	DEFINE_PRIME1v (lime_neko_execute);
@@ -14714,6 +14801,7 @@ namespace lime {
 	DEFINE_PRIME0 (lime_system_get_platform_label);
 	DEFINE_PRIME0 (lime_system_get_platform_name);
 	DEFINE_PRIME0 (lime_system_get_platform_version);
+	DEFINE_PRIME3 (lime_system_get_secure_random_bytes);
 	DEFINE_PRIME0 (lime_system_get_timer);
 	DEFINE_PRIME0 (lime_system_get_performance_counter);
 	DEFINE_PRIME0 (lime_system_get_performance_frequency);
@@ -14883,6 +14971,7 @@ namespace lime {
 	DEFINE_PRIME2 (lime_window_flash);
 	DEFINE_PRIME1 (lime_window_get_keyboard_grab);
 	DEFINE_PRIME1 (lime_window_get_mouse_rect);
+	DEFINE_PRIME1 (lime_window_get_native_handle);
 	DEFINE_PRIME2v (lime_window_set_keyboard_grab);
 	DEFINE_PRIME2v (lime_window_set_mouse_lock);
 	DEFINE_PRIME5v (lime_window_set_mouse_rect);
@@ -14923,7 +15012,7 @@ namespace lime {
 	#define _TTOUCH_EVENT _OBJ (_I32 _F64 _F64 _I32 _F64 _I32 _F64 _F64)
 	#define _TTRAY_ICON_EVENT _OBJ (_I32 _I32 _I32)
 	#define _TVECTOR2 _OBJ (_F64 _F64)
-	#define _TVORBISFILE _OBJ (_I32 _DYN)
+	#define _TVORBISFILE _OBJ (_I32 _DYN _TBYTES)
 	#define _TWINDOW_EVENT _OBJ (_I32 _I32 _I32 _I32 _I32 _I32)
 
 	#define _TARRAYBUFFER _TBYTES
@@ -15056,6 +15145,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_TBYTES, hl_lzma_compress, _TBYTES _TBYTES);
 	DEFINE_HL_PRIM (_TBYTES, hl_lzma_decompress, _TBYTES _TBYTES);
 	DEFINE_HL_PRIM (_VOID, hl_menu_event_manager_register, _FUN (_VOID, _NO_ARG) _TMENU_EVENT);
+	DEFINE_HL_PRIM (_TBYTES, hl_menu_get_application_menu, _TBYTES);
 	DEFINE_HL_PRIM (_I32, hl_menu_get_support, _NO_ARG);
 	DEFINE_HL_PRIM (_VOID, hl_mouse_event_manager_register, _FUN (_VOID, _NO_ARG) _TMOUSE_EVENT);
 	// DEFINE_PRIME1v (lime_neko_execute);
@@ -15075,6 +15165,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_BYTES, hl_system_get_platform_label, _NO_ARG);
 	DEFINE_HL_PRIM (_BYTES, hl_system_get_platform_name, _NO_ARG);
 	DEFINE_HL_PRIM (_BYTES, hl_system_get_platform_version, _NO_ARG);
+	DEFINE_HL_PRIM (_BOOL, hl_system_get_secure_random_bytes, _TBYTES _I32 _I32);
 	DEFINE_HL_PRIM (_F64, hl_system_get_timer, _NO_ARG);
 	DEFINE_HL_PRIM (_F64, hl_system_get_performance_counter, _NO_ARG);
 	DEFINE_HL_PRIM (_F64, hl_system_get_performance_frequency, _NO_ARG);
@@ -15244,6 +15335,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_BOOL, hl_window_flash, _TCFFIPOINTER _I32);
 	DEFINE_HL_PRIM (_BOOL, hl_window_get_keyboard_grab, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_DYN, hl_window_get_mouse_rect, _TCFFIPOINTER);
+	DEFINE_HL_PRIM (_DYN, hl_window_get_native_handle, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_VOID, hl_window_set_keyboard_grab, _TCFFIPOINTER _BOOL);
 	DEFINE_HL_PRIM (_VOID, hl_window_set_mouse_lock, _TCFFIPOINTER _BOOL);
 	DEFINE_HL_PRIM (_VOID, hl_window_set_mouse_rect, _TCFFIPOINTER _I32 _I32 _I32 _I32);
@@ -15302,6 +15394,7 @@ extern "C" int lime_sdl_sound_register_prims ();
 extern "C" int lime_sdl_sound_register_prims () { return 0; }
 #endif
 
+extern "C" int lime_local_socket_register_prims ();
 extern "C" int lime_video_register_prims ();
 
 #ifdef LIME_VORBIS
@@ -15316,6 +15409,7 @@ extern "C" int lime_register_prims () {
 	lime_cairo_register_prims ();
 	lime_curl_register_prims ();
 	lime_harfbuzz_register_prims ();
+	lime_local_socket_register_prims ();
 	lime_openal_register_prims ();
 	lime_opengl_register_prims ();
 	lime_sdl_sound_register_prims ();

@@ -35,6 +35,7 @@ import lime.ui.MouseCursor;
 import lime.ui.MouseWheelMode;
 import lime.ui.Touch;
 import lime.ui.Window;
+import lime.ui.WindowHandle;
 
 @:access(lime._internal.backend.html5.HTML5Application)
 @:access(lime._internal.backend.html5.HTML5WebGL2RenderContext)
@@ -89,6 +90,7 @@ class HTML5Window
 	public function new(parent:Window)
 	{
 		this.parent = parent;
+		parent.__alwaysOnTop = false;
 
 		cursor = DEFAULT;
 		cacheMouseX = 0;
@@ -434,20 +436,7 @@ class HTML5Window
 
 	public function getFrameRate():Float
 	{
-		if (parent.application == null) return 0;
-
-		if (parent.application.__backend.framePeriod < 0)
-		{
-			return 60;
-		}
-		else if (parent.application.__backend.framePeriod == 1000)
-		{
-			return 0;
-		}
-		else
-		{
-			return 1000 / parent.application.__backend.framePeriod;
-		}
+		return (parent.application != null) ? parent.application.__getFrameRate() : 0;
 	}
 
 	public function flash(mode:Int):Bool
@@ -466,6 +455,11 @@ class HTML5Window
 	}
 
 	public function getMouseRect():Rectangle
+	{
+		return null;
+	}
+
+	public function getNativeHandle():WindowHandle
 	{
 		return null;
 	}
@@ -1144,20 +1138,10 @@ class HTML5Window
 
 	public function setFrameRate(value:Float):Float
 	{
-		if (parent.application != null)
+		// The application keeps the rate, so frame settings changed later start from it
+		if (parent.application != null && parent == parent.application.window)
 		{
-			if (value >= 60)
-			{
-				if (parent == parent.application.window) parent.application.__backend.framePeriod = -1;
-			}
-			else if (value > 0)
-			{
-				if (parent == parent.application.window) parent.application.__backend.framePeriod = 1000 / value;
-			}
-			else
-			{
-				if (parent == parent.application.window) parent.application.__backend.framePeriod = 1000;
-			}
+			return parent.application.__setFrameRateFromWindow(value);
 		}
 
 		return value;
@@ -1407,7 +1391,8 @@ class HTML5Window
 
 	public function setAlwaysOnTop(value:Bool):Bool
 	{
-		return value;
+		// The page stays where the browser puts it
+		return false;
 	}
 
 	#if !lime_disable_window_scale_change

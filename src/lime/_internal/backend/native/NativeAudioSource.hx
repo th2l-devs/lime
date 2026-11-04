@@ -62,6 +62,8 @@ class NativeAudioSource
 	private var recoveryPosition:Vector4;
 	private var recoveryTime:Int;
 	private var sdlSoundStream:CFFIPointer;
+	// The native stream reads from these bytes, which the buffer drops when disposed
+	private var sdlSoundStreamBytes:Bytes;
 	private var samples:Int;
 	private var stateTimer:Timer;
 	private var stream:Bool;
@@ -367,12 +369,14 @@ class NativeAudioSource
 
 	private function clearSDLSoundStream():Void
 	{
-		#if (lime_sdl_sound && !macro)
+		#if (!macro && lime_cffi && lime_sdl_sound)
 		if (sdlSoundStream != null)
 		{
 			NativeCFFI.lime_sdl_sound_stream_clear(sdlSoundStream);
 			sdlSoundStream = null;
 		}
+
+		sdlSoundStreamBytes = null;
 		#end
 	}
 
@@ -402,12 +406,13 @@ class NativeAudioSource
 
 	private function openSDLSoundStream():Bool
 	{
-		#if (lime_sdl_sound && !macro)
+		#if (!macro && lime_cffi && lime_sdl_sound)
 		clearSDLSoundStream();
 
 		if (parent.buffer.__srcSDLSoundBytes != null)
 		{
-			sdlSoundStream = NativeCFFI.lime_sdl_sound_stream_from_bytes(parent.buffer.__srcSDLSoundBytes);
+			sdlSoundStreamBytes = parent.buffer.__srcSDLSoundBytes;
+			sdlSoundStream = NativeCFFI.lime_sdl_sound_stream_from_bytes(sdlSoundStreamBytes);
 		}
 		else if (parent.buffer.__srcSDLSoundPath != null)
 		{
@@ -460,7 +465,7 @@ class NativeAudioSource
 
 	private function resetSDLSoundStream(time:Int):Bool
 	{
-		#if (lime_sdl_sound && !macro)
+		#if (!macro && lime_cffi && lime_sdl_sound)
 		if (time < 0)
 		{
 			time = 0;
@@ -740,7 +745,7 @@ class NativeAudioSource
 
 	private function readSDLSoundBuffer(length:Int):Int
 	{
-		#if (lime_sdl_sound && !macro)
+		#if (!macro && lime_cffi && lime_sdl_sound)
 		if (sdlSoundStream == null || length <= 0 || streamByteRate <= 0)
 		{
 			return 0;
@@ -1265,6 +1270,7 @@ class NativeAudioSource
 	{
 		if (playing && length != value)
 		{
+			length = value;
 			if (alSourceFinished())
 			{
 				if (timer != null) timer.stop();
@@ -1279,6 +1285,25 @@ class NativeAudioSource
 		return length = value;
 	}
 
+	private function startCompletionTimer(timeRemaining:Int):Void
+	{
+		if (timer != null)
+		{
+			timer.stop();
+		}
+
+		// A stream that loops inline counts its loops as it queues them, and completes when it runs out
+		if (timeRemaining > 0 && !shouldLoopStreamInline())
+		{
+			timer = new Timer(timeRemaining);
+			timer.run = timer_onRun;
+		}
+		else
+		{
+			timer = null;
+		}
+	}
+
 	public function getLoops():Int
 	{
 		return loops;
@@ -1286,7 +1311,15 @@ class NativeAudioSource
 
 	public function setLoops(value:Int):Int
 	{
-		return loops = value;
+		loops = value;
+
+		if (playing && timer != null && shouldLoopStreamInline())
+		{
+			timer.stop();
+			timer = null;
+		}
+
+		return loops;
 	}
 
 	public function getPitch():Float

@@ -30,6 +30,7 @@ import lime.system.Display;
 import lime.system.DisplayMode;
 import lime.system.System;
 import lime.ui.Window;
+import lime.ui.WindowHandle;
 
 @:access(lime._internal.backend.flash.FlashApplication)
 @:access(lime.app.Application)
@@ -199,6 +200,10 @@ class FlashWindow
 
 	private function create():Void
 	{
+		#if !air
+		parent.__alwaysOnTop = false;
+		#end
+
 		if (#if air true #else FlashApplication.createFirstWindow #end)
 		{
 			var attributes = parent.__attributes;
@@ -587,6 +592,11 @@ class FlashWindow
 		return null;
 	}
 
+	public function getNativeHandle():WindowHandle
+	{
+		return null;
+	}
+
 	public function getOpacity():Float
 	{
 		return 1.0;
@@ -689,7 +699,8 @@ class FlashWindow
 
 	public function setAlwaysOnTop(value:Bool):Bool
 	{
-		return value;
+		// The window stays where the browser or player puts it
+		return false;
 	}
 
 	public function warpMouse(x:Int, y:Int):Void {}

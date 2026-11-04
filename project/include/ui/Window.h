@@ -48,6 +48,7 @@ namespace lime {
 			virtual bool GetMouseLock () = 0;
 			virtual bool GetFocused () = 0;
 			virtual bool GetMouseRect (int* x, int* y, int* width, int* height) { return false; }
+			virtual int GetNativeHandle (void** handle, void** display) { return 0; }
 			virtual float GetOpacity () = 0;
 			virtual double GetScale () = 0;
 			virtual bool GetTextInputEnabled () = 0;
@@ -128,6 +129,19 @@ namespace lime {
 		WINDOW_FLAG_COLOR_DEPTH_32_BIT = 0x00010000,
 		WINDOW_FLAG_VULKAN = 0x00020000,
 		WINDOW_FLAG_TRANSPARENT = 0x00040000
+
+	};
+
+
+	enum WindowHandleType {
+
+		WINDOW_HANDLE_NONE = 0,
+		WINDOW_HANDLE_WINDOWS = 1,
+		WINDOW_HANDLE_COCOA = 2,
+		WINDOW_HANDLE_X11 = 3,
+		WINDOW_HANDLE_WAYLAND = 4,
+		WINDOW_HANDLE_UIKIT = 5,
+		WINDOW_HANDLE_ANDROID = 6
 
 	};
 
