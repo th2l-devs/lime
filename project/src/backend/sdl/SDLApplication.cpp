@@ -91,6 +91,10 @@ namespace lime {
 
 		#ifdef LIME_FIX_FREEZE_WINDOW
 		lastWatchedEventTimestamp = 0;
+		modalLastRender = 0;
+		modalLastMove = 0;
+		modalSwapInterval = 0;
+		modalSwapChanged = false;
 		modalTimerActive = false;
 		#endif
 
@@ -1021,8 +1025,18 @@ namespace lime {
 
 		application->ProcessWindowEvent (event);
 		application->lastWatchedEventTimestamp = event->window.timestamp;
+
+		if (event->type == SDL_EVENT_WINDOW_MOVED) application->modalLastMove = currentUpdate;
+
+		if (application->modalTimerActive && !application->ModalFrameDue (currentUpdate)) {
+
+			return true;
+
+		}
+
 		application->RenderFrame (currentUpdate);
 		application->nextUpdate = currentUpdate;
+		application->modalLastRender = currentUpdate;
 
 		// The return value of an event watcher is ignored, HandleEvent skips
 		// the queued copy of this event using lastWatchedEventTimestamp
@@ -1031,11 +1045,18 @@ namespace lime {
 	}
 
 
+	bool SDLApplication::ModalFrameDue (Uint64 now) {
+
+		Uint64 period = framePeriod > 0 ? framePeriod : SDL_NS_PER_MS * 8;
+		return modalLastRender == 0 || now < modalLastRender || now - modalLastRender >= period - period / 8;
+
+	}
+
+
 	#ifdef HX_WINDOWS
 
 	// Arbitrary, unlikely-to-collide timer id for the modal-loop render timer.
 	static const UINT_PTR LIME_MODAL_TIMER_ID = 0x4C494D45; // 'LIME'
-	static Uint64 modalLastTick = 0;
 
 	// Called directly by DispatchMessage in the modal loop, so it works even with a subclassed WndProc.
 	void __stdcall SDLApplication::ModalRenderTimerProc (void* hWnd, unsigned int message, uintptr_t idTimer, unsigned long dwTime) {
@@ -1045,39 +1066,33 @@ namespace lime {
 		if (idTimer != LIME_MODAL_TIMER_ID || !application || !application->active || inBackground) return;
 
 		Uint64 tick = SDL_GetTicksNS ();
-		Uint64 interval = modalLastTick > 0 && tick > modalLastTick ? tick - modalLastTick : 0;
-		Uint64 maxInterval = SDL_NS_PER_MS * 50;
-		if (interval > maxInterval) interval = maxInterval;
-		modalLastTick = tick;
+		if (!application->ModalFrameDue (tick)) return;
+
+		Uint64 period = application->framePeriod > 0 ? application->framePeriod : SDL_NS_PER_MS * 8;
+		bool behind = application->modalLastRender > 0 && tick > application->modalLastRender && tick - application->modalLastRender >= period * 2 - period / 4;
 
 		application->RenderFrame (tick);
 		application->nextUpdate = tick;
+		application->modalLastRender = tick;
 
-		Uint64 period = application->framePeriod;
-		if (interval == 0) return;
+		if (!behind || !application->active || inBackground) return;
 
-		Uint64 deadline = tick + interval;
+		Uint64 now = SDL_GetTicksNS ();
+		Uint64 target = tick + period;
+		bool still = application->modalLastMove == 0 || now - application->modalLastMove > SDL_NS_PER_MS * 50;
 
-		while (application->active && !inBackground) {
+		if (still && now < target) {
 
-			Uint64 target = application->nextUpdate + period;
-			Uint64 now = SDL_GetTicksNS ();
-			Uint64 cost = now > application->nextUpdate ? now - application->nextUpdate : 0;
-			if (target + cost / 2 >= deadline || now + cost >= deadline) break;
-
-			if (now < target) {
-
-				System::GCEnterBlocking ();
-				SDL_DelayPrecise (target - now);
-				System::GCExitBlocking ();
-				now = SDL_GetTicksNS ();
-
-			}
-
-			application->RenderFrame (now);
-			application->nextUpdate = period > 0 ? target : now;
+			System::GCEnterBlocking ();
+			SDL_DelayPrecise (target - now);
+			System::GCExitBlocking ();
+			now = SDL_GetTicksNS ();
 
 		}
+
+		application->RenderFrame (now);
+		application->nextUpdate = now;
+		application->modalLastRender = now;
 
 	}
 
@@ -1092,7 +1107,13 @@ namespace lime {
 			case WM_ENTERSIZEMOVE:
 			case WM_ENTERMENULOOP:
 
-				modalLastTick = 0;
+				application->modalLastRender = 0;
+
+				if (SDL_GL_GetCurrentContext () && SDL_GL_GetSwapInterval (&application->modalSwapInterval) && application->modalSwapInterval != 0) {
+
+					application->modalSwapChanged = SDL_GL_SetSwapInterval (0);
+
+				}
 
 				if (SetTimer (msg->hwnd, LIME_MODAL_TIMER_ID, USER_TIMER_MINIMUM, (TIMERPROC)&SDLApplication::ModalRenderTimerProc)) {
 
@@ -1106,6 +1127,13 @@ namespace lime {
 
 				KillTimer (msg->hwnd, LIME_MODAL_TIMER_ID);
 				application->modalTimerActive = false;
+
+				if (application->modalSwapChanged) {
+
+					SDL_GL_SetSwapInterval (application->modalSwapInterval);
+					application->modalSwapChanged = false;
+
+				}
 				break;
 
 		}

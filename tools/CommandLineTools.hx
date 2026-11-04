@@ -428,6 +428,16 @@ class CommandLineTools
 		}
 	}
 
+	private static function pushToolFlag(args:Array<String>, flag:String):Void
+	{
+		var index = args.indexOf("-args");
+		var dashes = args.indexOf("--");
+		if (index < 0 || (dashes > -1 && dashes < index)) index = dashes;
+
+		if (index > -1) args.insert(index, flag);
+		else args.push(flag);
+	}
+
 	#if neko
 	public static function __init__():Void
 	{
@@ -1487,8 +1497,8 @@ class CommandLineTools
 						Sys.setCwd(limePath);
 
 						args = [Path.combine(limePath, "run.n")].concat(args);
-						args.push("--haxelib-lime=" + limePath);
-						args.push("-nolocalrepocheck");
+						pushToolFlag(args, "--haxelib-lime=" + limePath);
+						pushToolFlag(args, "-nolocalrepocheck");
 						args.push(workingDirectory);
 
 						Sys.exit(Sys.command("neko", args));
@@ -1772,8 +1782,8 @@ class CommandLineTools
 			Sys.setCwd(limePath);
 
 			args = [Path.combine(limePath, "run.n")].concat(args);
-			args.push("--haxelib-lime=" + limePath);
-			args.push("-norerun");
+			pushToolFlag(args, "--haxelib-lime=" + limePath);
+			pushToolFlag(args, "-norerun");
 			args.push(workingDirectory);
 
 			Sys.exit(Sys.command("neko", args));
@@ -1837,13 +1847,13 @@ class CommandLineTools
 						args.push("--haxelib-" + haxelib.name + "=" + Haxelib.getPath(haxelib));
 					}
 
-					args.push("-notoolscheck");
+					pushToolFlag(args, "-notoolscheck");
 
 					var projectDirectory = Path.directory(projectFile);
 					var localRepository = Path.combine(projectDirectory, ".haxelib");
 					if (FileSystem.exists(localRepository) && FileSystem.isDirectory(localRepository) && StringTools.startsWith(path, localRepository))
 					{
-						args.push("-nolocalrepocheck");
+						pushToolFlag(args, "-nolocalrepocheck");
 					}
 
 					Sys.setCwd(path);

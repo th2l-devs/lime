@@ -61,7 +61,12 @@ namespace lime {
 			static bool SDLCALL WindowsMessageHook (void* userdata, void* msg);
 			static void __stdcall ModalRenderTimerProc (void* hWnd, unsigned int message, uintptr_t idTimer, unsigned long dwTime);
 			#endif
+			bool ModalFrameDue (Uint64 now);
 			Uint64 lastWatchedEventTimestamp;
+			Uint64 modalLastRender;
+			Uint64 modalLastMove;
+			int modalSwapInterval;
+			bool modalSwapChanged;
 			bool modalTimerActive;
 			#endif
 
