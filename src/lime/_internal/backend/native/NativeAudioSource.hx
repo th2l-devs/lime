@@ -239,7 +239,7 @@ class NativeAudioSource
 					parent.buffer.__srcBufferContext = AudioManager.__contextGeneration;
 				}
 			}
-			else if (parent.buffer.__srcBufferContext != AudioManager.__contextGeneration)
+			else if (parent.buffer.__srcBufferContext != AudioManager.__contextGeneration && parent.buffer.data != null)
 			{
 				parent.buffer.__srcBuffer = null;
 				init();
