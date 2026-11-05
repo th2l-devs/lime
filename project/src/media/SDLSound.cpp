@@ -262,7 +262,9 @@ namespace lime {
 
 		for (;;) {
 
+			System::GCEnterBlocking ();
 			Uint32 decoded = Sound_Decode (sample);
+			System::GCExitBlocking ();
 
 			if (sample->flags & SOUND_SAMPLEFLAG_ERROR) {
 
