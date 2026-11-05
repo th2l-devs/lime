@@ -4308,6 +4308,8 @@ namespace lime {
 
 				programBinaryGet = (ProgramBinaryGet)SDL_GL_GetProcAddress ("glGetProgramBinary");
 				programBinarySet = (ProgramBinarySet)SDL_GL_GetProcAddress ("glProgramBinary");
+				if (!programBinaryGet) programBinaryGet = (ProgramBinaryGet)SDL_GL_GetProcAddress ("glGetProgramBinaryOES");
+				if (!programBinarySet) programBinarySet = (ProgramBinarySet)SDL_GL_GetProcAddress ("glProgramBinaryOES");
 				programParameterSet = (ProgramParameterSet)SDL_GL_GetProcAddress ("glProgramParameteri");
 
 			}
@@ -4316,7 +4318,7 @@ namespace lime {
 
 		}
 
-		return programBinaryGet && programBinarySet && programParameterSet;
+		return programBinaryGet && programBinarySet;
 
 	}
 
@@ -4357,7 +4359,7 @@ namespace lime {
 
 	static void ProgramBinaryAllowRead (GLuint program) {
 
-		if (ProgramBinaryReady ()) programParameterSet (program, 0x8257, GL_TRUE);
+		if (ProgramBinaryReady () && programParameterSet) programParameterSet (program, 0x8257, GL_TRUE);
 
 	}
 	#else

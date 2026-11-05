@@ -68,6 +68,7 @@ namespace lime {
 		SDL_SetHint (SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
 
 		#if defined (HX_WINDOWS) && !defined (HX_WINRT)
+		SDL_SetHintWithPriority (SDL_HINT_WINDOWS_RAW_KEYBOARD, "1", SDL_HINT_DEFAULT);
 		// SDL3 makes the process per-monitor DPI aware by default, SDL2 left it unaware.
 		// Keep the SDL2 behaviour (lime defaults to allow-high-dpi="false" on Windows),
 		// otherwise scaled displays render at native resolution and use far more memory.
@@ -877,6 +878,7 @@ namespace lime {
 			touchEvent.dy = event->tfinger.dy;
 			touchEvent.pressure = event->tfinger.pressure;
 			touchEvent.device = (int)event->tfinger.touchID;
+			touchEvent.timestamp = (int)SDL_NS_TO_MS (event->tfinger.timestamp);
 
 			TouchEvent::Dispatch (&touchEvent);
 

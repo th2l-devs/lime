@@ -93,6 +93,9 @@ class CommandLineTools
 			case "help":
 				displayHelp();
 
+			case "stop":
+				stopRunning("export");
+
 			case "config":
 				displayConfig();
 
@@ -122,6 +125,7 @@ class CommandLineTools
 				}
 
 				var project = initializeProject();
+				if (targetFlags.exists("stop")) stopRunning(project.app.path);
 				buildProject(project);
 
 			case "rebuild":
@@ -427,6 +431,8 @@ class CommandLineTools
 		}
 	}
 
+	private static inline var STOP_SCRIPT:String = "param([string]$Root, [string]$App)\n$root = [IO.Path]::GetFullPath($Root).TrimEnd('\\').ToLower()\n$app = [IO.Path]::GetFullPath((Join-Path $Root $App)).TrimEnd('\\').ToLower()\n$all = @(Get-CimInstance Win32_Process)\n$byId = @{}\nforeach ($p in $all) { $byId[[int]$p.ProcessId] = $p }\n$keep = @{}\n$id = [int]$PID\nwhile ($id -and $byId.ContainsKey($id) -and -not $keep.ContainsKey($id)) { $keep[$id] = $true; $id = [int]$byId[$id].ParentProcessId }\n$inRoot = [regex]::Escape($root) + '(\\\\|\"|\\s|$)'\n$stop = @{}\nforeach ($p in $all) {\n  $pid2 = [int]$p.ProcessId\n  if ($keep.ContainsKey($pid2)) { continue }\n  $exe = if ($p.ExecutablePath) { $p.ExecutablePath.Replace('/', '\\').ToLower() } else { '' }\n  $cmd = if ($p.CommandLine) { $p.CommandLine.Replace('/', '\\').ToLower() } else { '' }\n  if ($exe.StartsWith($app + '\\')) { $stop[$pid2] = $true; continue }\n  if ($p.Name -match '^(neko|haxelib|haxe|lime|cl|link|lib)\\.exe$' -and $cmd -match $inRoot -and $cmd -notmatch '--wait|--server-listen|--server-connect') { $stop[$pid2] = $true }\n}\n$grew = $true\nwhile ($grew) {\n  $grew = $false\n  foreach ($p in $all) {\n    $pid2 = [int]$p.ProcessId\n    if ($stop.ContainsKey($pid2) -or $keep.ContainsKey($pid2)) { continue }\n    if ($stop.ContainsKey([int]$p.ParentProcessId)) { $stop[$pid2] = $true; $grew = $true }\n  }\n}\n$failed = 0\nforeach ($id in $stop.Keys) {\n  try { Stop-Process -Id $id -Force -ErrorAction Stop; Write-Output \"stopped $($byId[$id].Name) $id\" }\n  catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { $failed++; Write-Output \"failed $($byId[$id].Name) $id\" } }\n}\nif ($stop.Count -gt 0) { Start-Sleep -Milliseconds 300 }\nWrite-Output \"total $($stop.Count) failed $failed\"\n";
+
 	private static function pushToolFlag(args:Array<String>, flag:String):Void
 	{
 		var index = args.indexOf("-args");
@@ -541,6 +547,48 @@ class CommandLineTools
 		}
 	}
 	#end
+
+	private function stopRunning(appPath:String):Void
+	{
+		if (System.hostPlatform != WINDOWS)
+		{
+			Log.warn("Stopping running builds is only supported on Windows");
+			return;
+		}
+
+		var script = System.getTemporaryFile(".ps1");
+		File.saveContent(script, STOP_SCRIPT);
+
+		try
+		{
+			var process = new Process("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, Sys.getCwd(), appPath]);
+			var output = process.stdout.readAll().toString();
+			process.close();
+
+			for (line in output.split("\n"))
+			{
+				line = StringTools.trim(line);
+				if (StringTools.startsWith(line, "stopped ") || StringTools.startsWith(line, "failed "))
+				{
+					Log.info("", " - \x1b[1m" + line + "\x1b[0m");
+				}
+				else if (StringTools.startsWith(line, "total "))
+				{
+					Log.println("Running builds and game: " + line);
+				}
+			}
+		}
+		catch (e:Dynamic)
+		{
+			Log.warn("Could not stop running builds: " + e);
+		}
+
+		try
+		{
+			FileSystem.deleteFile(script);
+		}
+		catch (e:Dynamic) {}
+	}
 
 	private function buildProject(project:HXProject, command:String = "")
 	{
@@ -806,6 +854,7 @@ class CommandLineTools
 			"deploy" => "Archive and upload builds",
 			"display" => "Display information for the specified project and target",
 			"rebuild" => "Recompile native binaries for libraries",
+			"stop" => "Stop running builds and the game of the project in this folder",
 			"install" => "Install a library from haxelib, plus dependencies",
 			"remove" => "Remove a library from haxelib",
 			"upgrade" => "Upgrade a library from haxelib",
@@ -814,7 +863,7 @@ class CommandLineTools
 		];
 
 		var basicCommands = ["config", "create", "clean", "update", "build", "run", "test", "help"];
-		var additionalCommands = ["trace", "deploy", "display", "rebuild", "install", "remove", "upgrade", "setup"];
+		var additionalCommands = ["stop", "trace", "deploy", "display", "rebuild", "install", "remove", "upgrade", "setup"];
 
 		if (targetFlags.exists("openfl"))
 		{

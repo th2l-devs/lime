@@ -770,7 +770,7 @@ class NativeApplication
 				}
 				currentTouches.set(touch.id, touch);
 
-				Touch.onStart.dispatch(touch);
+				@:privateAccess Touch.onStart.__dispatchWithTimestamp(touchEventInfo.timestamp, touch);
 			case TOUCH_END:
 				var touch = currentTouches.get(touchEventInfo.id);
 
@@ -783,7 +783,7 @@ class NativeApplication
 					touch.dy = touchEventInfo.dy;
 					touch.pressure = touchEventInfo.pressure;
 
-					Touch.onEnd.dispatch(touch);
+					@:privateAccess Touch.onEnd.__dispatchWithTimestamp(touchEventInfo.timestamp, touch);
 					currentTouches.remove(touchEventInfo.id);
 					unusedTouchesPool.add(touch);
 				}
@@ -1308,6 +1308,7 @@ class NativeApplication
 	public var type:TouchEventType;
 	public var x:Float;
 	public var y:Float;
+	public var timestamp:Int = 0;
 
 	public function new(type:TouchEventType = null, x:Float = 0, y:Float = 0, id:Int = 0, dx:Float = 0, dy:Float = 0, pressure:Float = 0, device:Int = 0)
 	{
@@ -1324,7 +1325,9 @@ class NativeApplication
 
 	public function clone():TouchEventInfo
 	{
-		return new TouchEventInfo(type, x, y, id, dx, dy, pressure, device);
+		var info = new TouchEventInfo(type, x, y, id, dx, dy, pressure, device);
+		info.timestamp = timestamp;
+		return info;
 	}
 }
 
