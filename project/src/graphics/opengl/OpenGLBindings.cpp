@@ -4280,6 +4280,154 @@ namespace lime {
 	}
 
 
+	#if defined (LIME_SDL)
+	#if defined (_WIN32)
+	#define LIME_GL_CALL __stdcall
+	#else
+	#define LIME_GL_CALL
+	#endif
+
+	typedef void (LIME_GL_CALL *ProgramBinaryGet) (GLuint, GLsizei, GLsizei*, GLenum*, void*);
+	typedef void (LIME_GL_CALL *ProgramBinarySet) (GLuint, GLenum, const void*, GLsizei);
+	typedef void (LIME_GL_CALL *ProgramParameterSet) (GLuint, GLenum, GLint);
+
+	static ProgramBinaryGet programBinaryGet = 0;
+	static ProgramBinarySet programBinarySet = 0;
+	static ProgramParameterSet programParameterSet = 0;
+	static bool programBinaryResolved = false;
+
+	static bool ProgramBinaryReady () {
+
+		if (!programBinaryResolved) {
+
+			GLint formats = 0;
+			glGetIntegerv (0x87FE, &formats);
+			while (glGetError () != GL_NO_ERROR) {}
+
+			if (formats > 0) {
+
+				programBinaryGet = (ProgramBinaryGet)SDL_GL_GetProcAddress ("glGetProgramBinary");
+				programBinarySet = (ProgramBinarySet)SDL_GL_GetProcAddress ("glProgramBinary");
+				programParameterSet = (ProgramParameterSet)SDL_GL_GetProcAddress ("glProgramParameteri");
+
+			}
+
+			programBinaryResolved = true;
+
+		}
+
+		return programBinaryGet && programBinarySet && programParameterSet;
+
+	}
+
+	static int ProgramBinaryRead (GLuint program, Bytes* bytes) {
+
+		if (!ProgramBinaryReady ()) return 0;
+
+		while (glGetError () != GL_NO_ERROR) {}
+
+		GLint size = 0;
+		glGetProgramiv (program, 0x8741, &size);
+		if (size <= 0) return 0;
+
+		bytes->Resize (size);
+
+		GLsizei written = 0;
+		GLenum format = 0;
+		programBinaryGet (program, size, &written, &format, bytes->b);
+		if (written <= 0 || glGetError () != GL_NO_ERROR) return 0;
+
+		bytes->Resize (written);
+		return (int)format;
+
+	}
+
+	static bool ProgramBinaryWrite (GLuint program, int format, const void* data, int length) {
+
+		if (!ProgramBinaryReady ()) return false;
+
+		programBinarySet (program, (GLenum)format, data, length);
+
+		GLint linked = 0;
+		glGetProgramiv (program, GL_LINK_STATUS, &linked);
+		while (glGetError () != GL_NO_ERROR) {}
+		return linked == GL_TRUE;
+
+	}
+
+	static void ProgramBinaryAllowRead (GLuint program) {
+
+		if (ProgramBinaryReady ()) programParameterSet (program, 0x8257, GL_TRUE);
+
+	}
+	#else
+	static bool ProgramBinaryReady () { return false; }
+	static int ProgramBinaryRead (GLuint program, Bytes* bytes) { return 0; }
+	static bool ProgramBinaryWrite (GLuint program, int format, const void* data, int length) { return false; }
+	static void ProgramBinaryAllowRead (GLuint program) {}
+	#endif
+
+
+	bool lime_gl_program_binary_ready (int unused) {
+
+		return ProgramBinaryReady ();
+
+	}
+
+
+	HL_PRIM bool HL_NAME(hl_gl_program_binary_ready) (int unused) {
+
+		return ProgramBinaryReady ();
+
+	}
+
+
+	void lime_gl_program_binary_allow_read (int program) {
+
+		ProgramBinaryAllowRead (program);
+
+	}
+
+
+	HL_PRIM void HL_NAME(hl_gl_program_binary_allow_read) (int program) {
+
+		ProgramBinaryAllowRead (program);
+
+	}
+
+
+	int lime_gl_program_binary_read (int program, value bytes) {
+
+		Bytes _bytes (bytes);
+		int format = ProgramBinaryRead (program, &_bytes);
+		if (format != 0) _bytes.Value (bytes);
+		return format;
+
+	}
+
+
+	HL_PRIM int HL_NAME(hl_gl_program_binary_read) (int program, Bytes* bytes) {
+
+		return ProgramBinaryRead (program, bytes);
+
+	}
+
+
+	bool lime_gl_program_binary_write (int program, int format, value bytes) {
+
+		Bytes _bytes (bytes);
+		return ProgramBinaryWrite (program, format, _bytes.b, _bytes.length);
+
+	}
+
+
+	HL_PRIM bool HL_NAME(hl_gl_program_binary_write) (int program, int format, Bytes* bytes) {
+
+		return ProgramBinaryWrite (program, format, bytes->b, bytes->length);
+
+	}
+
+
 	void lime_gl_program_parameteri (int program, int pname, int value) {
 
 		#ifdef LIME_GLES3_API
@@ -5920,6 +6068,10 @@ namespace lime {
 	DEFINE_PRIME2v (lime_gl_pixel_storei);
 	DEFINE_PRIME2v (lime_gl_polygon_offset);
 	DEFINE_PRIME4v (lime_gl_program_binary);
+	DEFINE_PRIME1 (lime_gl_program_binary_ready);
+	DEFINE_PRIME1v (lime_gl_program_binary_allow_read);
+	DEFINE_PRIME2 (lime_gl_program_binary_read);
+	DEFINE_PRIME3 (lime_gl_program_binary_write);
 	DEFINE_PRIME3v (lime_gl_program_parameteri);
 	DEFINE_PRIME1v (lime_gl_read_buffer);
 	DEFINE_PRIME7v (lime_gl_read_pixels);
@@ -6199,6 +6351,10 @@ namespace lime {
 	DEFINE_HL_PRIM (_VOID, hl_gl_pixel_storei, _I32 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_polygon_offset, _F32 _F32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_program_binary, _I32 _I32 _F64 _I32);
+	DEFINE_HL_PRIM (_BOOL, hl_gl_program_binary_ready, _I32);
+	DEFINE_HL_PRIM (_VOID, hl_gl_program_binary_allow_read, _I32);
+	DEFINE_HL_PRIM (_I32, hl_gl_program_binary_read, _I32 _TBYTES);
+	DEFINE_HL_PRIM (_BOOL, hl_gl_program_binary_write, _I32 _I32 _TBYTES);
 	DEFINE_HL_PRIM (_VOID, hl_gl_program_parameteri, _I32 _I32 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_read_buffer, _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_read_pixels, _I32 _I32 _I32 _I32 _I32 _I32 _F64);

@@ -6126,6 +6126,14 @@ class NativeCFFI
 
 	@:cffi private static function lime_gl_program_binary(program:Int, binaryFormat:Int, binary:DataPointer, length:Int):Void;
 
+	@:cffi private static function lime_gl_program_binary_ready(unused:Int):Bool;
+
+	@:cffi private static function lime_gl_program_binary_allow_read(program:Int):Void;
+
+	@:cffi private static function lime_gl_program_binary_read(program:Int, bytes:Dynamic):Int;
+
+	@:cffi private static function lime_gl_program_binary_write(program:Int, format:Int, bytes:Dynamic):Bool;
+
 	@:cffi private static function lime_gl_program_parameteri(program:Int, pname:Int, value:Int):Void;
 
 	@:cffi private static function lime_gl_read_buffer(src:Int):Void;
@@ -6589,6 +6597,10 @@ class NativeCFFI
 		"ffv", false));
 	private static var lime_gl_program_binary = new cpp.Callable<Int->Int->lime.utils.DataPointer->Int->cpp.Void>(cpp.Prime._loadPrime("lime",
 		"lime_gl_program_binary", "iidiv", false));
+	private static var lime_gl_program_binary_ready = new cpp.Callable<Int->Bool>(cpp.Prime._loadPrime("lime", "lime_gl_program_binary_ready", "ib", false));
+	private static var lime_gl_program_binary_allow_read = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_program_binary_allow_read", "iv", false));
+	private static var lime_gl_program_binary_read = new cpp.Callable<Int->cpp.Object->Int>(cpp.Prime._loadPrime("lime", "lime_gl_program_binary_read", "ioi", false));
+	private static var lime_gl_program_binary_write = new cpp.Callable<Int->Int->cpp.Object->Bool>(cpp.Prime._loadPrime("lime", "lime_gl_program_binary_write", "iiob", false));
 	private static var lime_gl_program_parameteri = new cpp.Callable<Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_program_parameteri",
 		"iiiv", false));
 	private static var lime_gl_read_buffer = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_read_buffer", "iv", false));
@@ -6928,6 +6940,10 @@ class NativeCFFI
 	private static var lime_gl_pixel_storei = CFFI.load("lime", "lime_gl_pixel_storei", 2);
 	private static var lime_gl_polygon_offset = CFFI.load("lime", "lime_gl_polygon_offset", 2);
 	private static var lime_gl_program_binary = CFFI.load("lime", "lime_gl_program_binary", 4);
+	private static var lime_gl_program_binary_ready = CFFI.load("lime", "lime_gl_program_binary_ready", 1);
+	private static var lime_gl_program_binary_allow_read = CFFI.load("lime", "lime_gl_program_binary_allow_read", 1);
+	private static var lime_gl_program_binary_read = CFFI.load("lime", "lime_gl_program_binary_read", 2);
+	private static var lime_gl_program_binary_write = CFFI.load("lime", "lime_gl_program_binary_write", 3);
 	private static var lime_gl_program_parameteri = CFFI.load("lime", "lime_gl_program_parameteri", 3);
 	private static var lime_gl_read_buffer = CFFI.load("lime", "lime_gl_read_buffer", 1);
 	private static var lime_gl_read_pixels = CFFI.load("lime", "lime_gl_read_pixels", -1);
@@ -7639,6 +7655,23 @@ class NativeCFFI
 
 	@:hlNative("lime", "hl_gl_program_binary") private static function lime_gl_program_binary(program:Int, binaryFormat:Int, binary:DataPointer,
 		length:Int):Void {}
+
+	@:hlNative("lime", "hl_gl_program_binary_ready") private static function lime_gl_program_binary_ready(unused:Int):Bool
+	{
+		return false;
+	}
+
+	@:hlNative("lime", "hl_gl_program_binary_allow_read") private static function lime_gl_program_binary_allow_read(program:Int):Void {}
+
+	@:hlNative("lime", "hl_gl_program_binary_read") private static function lime_gl_program_binary_read(program:Int, bytes:Dynamic):Int
+	{
+		return 0;
+	}
+
+	@:hlNative("lime", "hl_gl_program_binary_write") private static function lime_gl_program_binary_write(program:Int, format:Int, bytes:Dynamic):Bool
+	{
+		return false;
+	}
 
 	@:hlNative("lime", "hl_gl_program_parameteri") private static function lime_gl_program_parameteri(program:Int, pname:Int, value:Int):Void {}
 
