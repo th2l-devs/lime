@@ -217,6 +217,30 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     // Main components
     protected static SDLActivity mSingleton;
     protected static SDLSurface mSurface;
+
+    private static float sPreferredFrameRate = 0f;
+
+    public static void setPreferredFrameRate(final float fps) {
+        sPreferredFrameRate = fps;
+        if (mSingleton == null) return;
+        mSingleton.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                applyPreferredFrameRate();
+            }
+        });
+    }
+
+    static void applyPreferredFrameRate() {
+        if (Build.VERSION.SDK_INT < 30 || sPreferredFrameRate <= 0f || mSurface == null) return;
+        Surface surface = mSurface.getHolder().getSurface();
+        if (surface == null || !surface.isValid()) return;
+        try {
+            surface.setFrameRate(sPreferredFrameRate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+        } catch (Exception e) {
+            Log.w(TAG, "setFrameRate failed: " + e);
+        }
+    }
     protected static SDLDummyEdit mTextEdit;
     protected static ViewGroup mLayout;
     protected static SDLClipboardHandler mClipboardHandler;
@@ -863,6 +887,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     nativeResume();
                 }
                 mSurface.handleResume();
+                applyPreferredFrameRate();
 
                 mCurrentNativeState = mNextNativeState;
             }

@@ -72,11 +72,7 @@ class FocusMuffle
 
 	static function retarget():Void
 	{
-		#if mobile
-		target = 0;
-		#else
 		target = enabled && !focused ? 1 : 0;
-		#end
 		if (target == amount) return;
 		if (timer == null)
 		{
