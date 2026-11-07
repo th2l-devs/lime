@@ -7,5 +7,6 @@
 -cp ../src
 -lib format
 -lib hxp
+-cp overrides
 #-lib svg
 -D optional-cffi
