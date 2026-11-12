@@ -592,7 +592,7 @@ class NativeApplication
 				case MOUSE_WHEEL:
 					// The fractions of a step come in movementX and movementY
 					if (window.preciseMouseWheel) window.onMouseWheel.dispatch(mouseEventInfo.movementX, mouseEventInfo.movementY, UNKNOWN);
-					else
+					else if (mouseEventInfo.x != 0 || mouseEventInfo.y != 0)
 						window.onMouseWheel.dispatch(mouseEventInfo.x, mouseEventInfo.y, UNKNOWN);
 				default:
 			}

@@ -45,9 +45,9 @@ namespace lime {
 				DropEvent* eventObject = (DropEvent*)DropEvent::eventObject->Get ();
 
 				int length = strlen ((const char*)event->file);
-				char* file = (char*)malloc (length + 1);
-				strcpy (file, (const char*)event->file);
-				eventObject->file = (vbyte*)file;
+				vbyte* file = hl_alloc_bytes (length + 1);
+				memcpy (file, event->file, length + 1);
+				eventObject->file = file;
 				eventObject->type = event->type;
 
 			}

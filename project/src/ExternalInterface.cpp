@@ -3370,9 +3370,7 @@ namespace lime {
 
 		if (guid) {
 
-			value result = alloc_string (guid);
-			delete guid;
-			return result;
+			return alloc_string (guid);
 
 		} else {
 

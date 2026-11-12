@@ -68,9 +68,9 @@ namespace lime {
 				}
 
 				int length = strlen ((const char*)event->text);
-				char* text = (char*)malloc (length + 1);
-				strcpy (text, (const char*)event->text);
-				eventObject->text = (vbyte*)text;
+				vbyte* text = hl_alloc_bytes (length + 1);
+				memcpy (text, event->text, length + 1);
+				eventObject->text = text;
 				eventObject->type = event->type;
 				eventObject->windowID = event->windowID;
 

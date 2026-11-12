@@ -53,8 +53,8 @@ namespace lime {
 		if (it == gameControllers.end ())
 			return nullptr;
 
-		char* guid = new char[64];
-		SDL_GUIDToString (SDL_GetGamepadGUIDForID (id), guid, 64);
+		static char guid[64];
+		SDL_GUIDToString (SDL_GetGamepadGUIDForID (id), guid, sizeof (guid));
 		return guid;
 
 	}

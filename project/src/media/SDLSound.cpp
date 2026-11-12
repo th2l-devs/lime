@@ -420,9 +420,28 @@ namespace lime {
 
 		}
 
+		const SDL_AudioSpec& output = sample->desired.format ? sample->desired : sample->actual;
+		int bitsPerSample = SDL_AUDIO_BITSIZE (output.format);
+
+		if (bitsPerSample <= 0) {
+
+			bitsPerSample = SDL_AUDIO_BITSIZE (SDL_AUDIO_S16);
+
+		}
+
 		SDLSoundStream* stream = new SDLSoundStream ();
 		stream->sample = sample;
+		stream->frameSize = (Uint32)(output.channels * (bitsPerSample / 8));
 		return stream;
+
+	}
+
+
+	static void ResetStream (SDLSoundStream* stream) {
+
+		stream->pending = 0;
+		stream->pendingOffset = 0;
+		stream->ended = false;
 
 	}
 
@@ -436,54 +455,101 @@ namespace lime {
 		}
 
 		Sound_Sample* sample = stream->sample;
-		const SDL_AudioSpec& output = sample->desired.format ? sample->desired : sample->actual;
-		int bitsPerSample = SDL_AUDIO_BITSIZE (output.format);
+		Uint32 frameSize = stream->frameSize > 0 ? stream->frameSize : 1;
+		Uint32 wanted = (Uint32)length;
 
-		if (bitsPerSample <= 0) {
+		if (wanted >= frameSize) {
 
-			bitsPerSample = SDL_AUDIO_BITSIZE (SDL_AUDIO_S16);
-
-		}
-
-		Uint32 decodeBufferSize = AlignBufferSize ((Uint32)length, output.channels * (bitsPerSample / 8));
-
-		if (decodeBufferSize > (Uint32)length) {
-
-			decodeBufferSize = (Uint32)length;
+			wanted -= wanted % frameSize;
 
 		}
 
-		if (decodeBufferSize != sample->buffer_size && !Sound_SetBufferSize (sample, decodeBufferSize)) {
+		Uint32 total = 0;
+		int retries = 0;
 
-			printf ("SDL_sound stream error: %s\n", Sound_GetError ());
-			return -1;
+		while (total < wanted) {
 
-		}
+			if (stream->pending > 0) {
 
-		Uint32 decoded = Sound_Decode (sample);
+				Uint32 count = stream->pending;
 
-		if (sample->flags & SOUND_SAMPLEFLAG_ERROR) {
+				if (count > wanted - total) {
 
-			printf ("SDL_sound stream error: %s\n", Sound_GetError ());
-			return -1;
+					count = wanted - total;
 
-		}
+				}
 
-		if (decoded == 0) {
-
-			if (sample->flags & SOUND_SAMPLEFLAG_EOF) {
-
-				return 0;
+				memcpy (buffer + total, (const Uint8*)sample->buffer + stream->pendingOffset, count);
+				stream->pendingOffset += count;
+				stream->pending -= count;
+				total += count;
+				continue;
 
 			}
 
-			printf ("SDL_sound stream error: decode stopped before EOF\n");
-			return -1;
+			if (stream->ended) {
+
+				break;
+
+			}
+
+			System::GCEnterBlocking ();
+			Uint32 decoded = Sound_Decode (sample);
+			System::GCExitBlocking ();
+
+			if (sample->flags & SOUND_SAMPLEFLAG_ERROR) {
+
+				printf ("SDL_sound stream error: %s\n", Sound_GetError ());
+				stream->ended = true;
+				break;
+
+			}
+
+			if (sample->flags & SOUND_SAMPLEFLAG_EOF) {
+
+				stream->ended = true;
+
+			}
+
+			if (decoded == 0) {
+
+				if (stream->ended) {
+
+					break;
+
+				}
+
+				if ((sample->flags & SOUND_SAMPLEFLAG_EAGAIN) && ++retries < 16) {
+
+					continue;
+
+				}
+
+				printf ("SDL_sound stream error: decode stopped before EOF\n");
+				stream->ended = true;
+				break;
+
+			}
+
+			retries = 0;
+			stream->pending = decoded;
+			stream->pendingOffset = 0;
 
 		}
 
-		memcpy (buffer, sample->buffer, decoded);
-		return (int)decoded;
+		if (total == 0) {
+
+			return (sample->flags & SOUND_SAMPLEFLAG_ERROR) ? -1 : 0;
+
+		}
+
+		if (stream->ended && stream->pending == 0 && total >= frameSize) {
+
+			total -= total % frameSize;
+
+		}
+
+		return (int)total;
 
 	}
 
@@ -496,6 +562,7 @@ namespace lime {
 
 		}
 
+		ResetStream (stream);
 		return (Sound_Rewind (stream->sample) != 0);
 
 	}
@@ -509,6 +576,7 @@ namespace lime {
 
 		}
 
+		ResetStream (stream);
 		return (Sound_Seek (stream->sample, (Uint32)ms) != 0);
 
 	}

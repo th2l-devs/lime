@@ -59,8 +59,8 @@ namespace lime {
 		SDL_Joystick* joystick = GetJoystick (id);
 		if (!joystick) return nullptr;
 
-		char* guid = new char[64];
-		SDL_GUIDToString (SDL_GetJoystickGUID (joystick), guid, 64);
+		static char guid[64];
+		SDL_GUIDToString (SDL_GetJoystickGUID (joystick), guid, sizeof (guid));
 		return guid;
 
 	}

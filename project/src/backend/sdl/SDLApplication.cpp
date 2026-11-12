@@ -66,6 +66,7 @@ namespace lime {
 	SDLApplication::SDLApplication () {
 
 		SDL_SetHint (SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+		SDL_SetHint (SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
 
 		#if defined (HX_WINDOWS) && !defined (HX_WINRT)
 		SDL_SetHintWithPriority (SDL_HINT_WINDOWS_RAW_KEYBOARD, "1", SDL_HINT_DEFAULT);
@@ -84,6 +85,25 @@ namespace lime {
 		if (!SDL_Init (initFlags)) {
 
 			printf ("Could not initialize SDL: %s.\n", SDL_GetError ());
+
+			if (!SDL_Init (SDL_INIT_VIDEO)) {
+
+				printf ("Could not initialize SDL video: %s.\n", SDL_GetError ());
+				exit (1);
+
+			}
+
+			const SDL_InitFlags optional[] = { SDL_INIT_AUDIO, SDL_INIT_GAMEPAD, SDL_INIT_JOYSTICK, SDL_INIT_SENSOR };
+
+			for (SDL_InitFlags flag : optional) {
+
+				if ((initFlags & flag) && !SDL_InitSubSystem (flag)) {
+
+					printf ("Could not initialize SDL subsystem 0x%x: %s.\n", (unsigned int)flag, SDL_GetError ());
+
+				}
+
+			}
 
 		}
 
@@ -382,26 +402,10 @@ namespace lime {
 
 				break;
 
-			case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
+			case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
 
 				ProcessWindowEvent (event);
-
-				// Avoid handling SDL_EVENT_QUIT if in response to window.close
-				SDL_Event nextEvent;
-
-				if (SDL_PollEvent (&nextEvent)) {
-
-					if (nextEvent.type != SDL_EVENT_QUIT) {
-
-						HandleEvent (&nextEvent);
-
-					}
-
-				}
-
 				break;
-
-			}
 
 			case SDL_EVENT_QUIT:
 
@@ -749,26 +753,22 @@ namespace lime {
 					// Match SDL2 behaviour: report whole scroll "ticks" only
 					int wheelX = event->wheel.integer_x;
 					int wheelY = event->wheel.integer_y;
+					float preciseX = event->wheel.x;
+					float preciseY = event->wheel.y;
 
-					if (wheelX == 0 && wheelY == 0) {
+					if (wheelX == 0 && wheelY == 0 && preciseX == 0 && preciseY == 0) {
 
 						return;
 
 					}
 
 					mouseEvent.type = MOUSE_WHEEL;
+					float sign = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
 
-					if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-
-						mouseEvent.x = -wheelX;
-						mouseEvent.y = -wheelY;
-
-					} else {
-
-						mouseEvent.x = wheelX;
-						mouseEvent.y = wheelY;
-
-					}
+					mouseEvent.x = sign * wheelX;
+					mouseEvent.y = sign * wheelY;
+					mouseEvent.movementX = sign * preciseX;
+					mouseEvent.movementY = sign * preciseY;
 
 					mouseEvent.windowID = event->wheel.windowID;
 					break;

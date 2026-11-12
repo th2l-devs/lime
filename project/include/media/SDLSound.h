@@ -26,8 +26,12 @@ namespace lime {
 	struct SDLSoundStream {
 
 		Sound_Sample* sample;
+		Uint32 pending;
+		Uint32 pendingOffset;
+		Uint32 frameSize;
+		bool ended;
 
-		SDLSoundStream () : sample (NULL) {}
+		SDLSoundStream () : sample (NULL), pending (0), pendingOffset (0), frameSize (0), ended (false) {}
 
 	};
 

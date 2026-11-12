@@ -120,6 +120,7 @@ namespace lime {
 		sdlRenderer = 0;
 		sdlWindow = 0;
 		context = 0;
+		useVulkan = (flags & WINDOW_FLAG_VULKAN) != 0;
 
 		if (useVulkan) {
 
@@ -151,7 +152,6 @@ namespace lime {
 		activeSwapInterval = 0;
 		requestedVSyncMode = (flags & WINDOW_FLAG_VSYNC) ? 1 : 0;
 		transparent = (flags & WINDOW_FLAG_TRANSPARENT) != 0;
-		useVulkan = false;
 
 		if (title && title[0] != '\0' && !SDL_GetHint (SDL_HINT_APP_NAME)) {
 
@@ -184,6 +184,7 @@ namespace lime {
 
 		if (flags & WINDOW_FLAG_HARDWARE) {
 
+			SDL_GL_ResetAttributes ();
 			sdlWindowFlags |= SDL_WINDOW_OPENGL;
 
 			#if defined (HX_WINDOWS) && defined (NATIVE_TOOLKIT_SDL_ANGLE)
@@ -495,8 +496,28 @@ namespace lime {
 
 	void SDLWindow::Close () {
 
+		if (sdlTexture) {
+
+			SDL_DestroyTexture (sdlTexture);
+			sdlTexture = 0;
+
+		}
+
+		if (sdlRenderer) {
+
+			SDL_DestroyRenderer (sdlRenderer);
+			sdlRenderer = 0;
+
+		} else if (context) {
+
+			SDL_GL_DestroyContext (context);
+			context = 0;
+
+		}
+
 		if (sdlWindow) {
 
+			SDLMenu::Remove (sdlWindow);
 			SDL_DestroyWindow (sdlWindow);
 			sdlWindow = 0;
 
