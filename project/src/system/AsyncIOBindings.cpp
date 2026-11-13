@@ -496,6 +496,86 @@ namespace lime {
 	}
 
 
+	struct ContentHash {
+
+		Uint64 h1;
+		Uint64 h2;
+		unsigned char tail[8];
+		int tailLength;
+
+		ContentHash (Uint64 total) : h1 (0x9E3779B97F4A7C15ULL ^ total), h2 (0xC2B2AE3D27D4EB4FULL + total), tailLength (0) {}
+
+		void Word (Uint64 w) {
+
+			h1 = (h1 ^ w) * 0x100000001B3ULL;
+			h1 ^= h1 >> 29;
+			h2 = (h2 + w) * 0xFF51AFD7ED558CCDULL;
+			h2 ^= h2 >> 31;
+
+		}
+
+		void Update (const unsigned char* data, size_t length) {
+
+			while (length > 0 && tailLength > 0) {
+
+				tail[tailLength++] = *data++;
+				length--;
+
+				if (tailLength == 8) {
+
+					Uint64 w;
+					memcpy (&w, tail, 8);
+					Word (w);
+					tailLength = 0;
+
+				}
+
+			}
+
+			while (length >= 8) {
+
+				Uint64 w;
+				memcpy (&w, data, 8);
+				Word (w);
+				data += 8;
+				length -= 8;
+
+			}
+
+			while (length > 0) {
+
+				tail[tailLength++] = *data++;
+				length--;
+
+			}
+
+		}
+
+		value Finish () {
+
+			for (int i = 0; i < tailLength; i++) {
+
+				h1 = (h1 ^ tail[i]) * 0x100000001B3ULL;
+				h2 = (h2 + tail[i]) * 0xFF51AFD7ED558CCDULL;
+
+			}
+
+			h1 ^= h2 >> 17;
+			h2 ^= h1 >> 23;
+			h1 *= 0xBF58476D1CE4E5B9ULL;
+			h2 *= 0x94D049BB133111EBULL;
+			h1 ^= h1 >> 31;
+			h2 ^= h2 >> 29;
+
+			char hex[33];
+			SDL_snprintf (hex, sizeof (hex), "%016llx%016llx", (unsigned long long)h1, (unsigned long long)h2);
+			return alloc_string (hex);
+
+		}
+
+	};
+
+
 	value lime_bytes_hash (value bytes, int offset, int length) {
 
 		int total = 0;
@@ -506,41 +586,62 @@ namespace lime {
 		if (length < 0 || length > total - offset) length = total - offset;
 		if (data) data += offset;
 
-		Uint64 h1 = 0x9E3779B97F4A7C15ULL ^ (Uint64)length;
-		Uint64 h2 = 0xC2B2AE3D27D4EB4FULL + (Uint64)length;
-		const Uint64 p1 = 0x100000001B3ULL;
-		const Uint64 p2 = 0xFF51AFD7ED558CCDULL;
+		ContentHash hash ((Uint64)length);
+		if (data && length > 0) hash.Update (data, (size_t)length);
+		return hash.Finish ();
 
-		size_t words = (size_t)length / 8;
+	}
 
-		for (size_t i = 0; i < words; i++) {
 
-			Uint64 w;
-			memcpy (&w, data + i * 8, 8);
-			h1 = (h1 ^ w) * p1;
-			h1 ^= h1 >> 29;
-			h2 = (h2 + w) * p2;
-			h2 ^= h2 >> 31;
+	value lime_file_hash (HxString path, int minBytes) {
+
+		std::string file = stringOf (path);
+		FILE_HANDLE* handle = lime::fopen (file.c_str (), "rb");
+		if (!handle) return alloc_null ();
+
+		lime::fseek (handle, 0, SEEK_END);
+		long size = lime::ftell (handle);
+		lime::fseek (handle, 0, SEEK_SET);
+
+		if (size <= 0 || size < minBytes) {
+
+			lime::fclose (handle);
+			return alloc_null ();
 
 		}
 
-		for (size_t i = words * 8; i < (size_t)length; i++) {
+		const size_t chunk = 1 << 20;
+		unsigned char* buffer = (unsigned char*)malloc (chunk);
 
-			h1 = (h1 ^ data[i]) * p1;
-			h2 = (h2 + data[i]) * p2;
+		if (!buffer) {
+
+			lime::fclose (handle);
+			return alloc_null ();
 
 		}
 
-		h1 ^= h2 >> 17;
-		h2 ^= h1 >> 23;
-		h1 *= 0xBF58476D1CE4E5B9ULL;
-		h2 *= 0x94D049BB133111EBULL;
-		h1 ^= h1 >> 31;
-		h2 ^= h2 >> 29;
+		ContentHash hash ((Uint64)size);
+		size_t remaining = (size_t)size;
 
-		char hex[33];
-		SDL_snprintf (hex, sizeof (hex), "%016llx%016llx", (unsigned long long)h1, (unsigned long long)h2);
-		return alloc_string (hex);
+		System::GCEnterBlocking ();
+
+		while (remaining > 0) {
+
+			size_t want = remaining < chunk ? remaining : chunk;
+			size_t got = lime::fread (buffer, 1, want, handle);
+			if (got == 0) break;
+			hash.Update (buffer, got);
+			remaining -= got;
+
+		}
+
+		System::GCExitBlocking ();
+
+		free (buffer);
+		lime::fclose (handle);
+
+		if (remaining > 0) return alloc_null ();
+		return hash.Finish ();
 
 	}
 
@@ -552,6 +653,7 @@ namespace lime {
 	DEFINE_PRIME2 (lime_async_io_take);
 	DEFINE_PRIME0 (lime_async_io_pending);
 	DEFINE_PRIME3 (lime_bytes_hash);
+	DEFINE_PRIME2 (lime_file_hash);
 
 
 }

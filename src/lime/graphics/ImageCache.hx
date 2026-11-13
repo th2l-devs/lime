@@ -1,7 +1,6 @@
 package lime.graphics;
 
 #if (sys && lime_cffi && !macro && !hl && !cs)
-import haxe.crypto.Md5;
 import haxe.io.Bytes;
 import lime._internal.backend.native.NativeCFFI;
 import lime.system.AsyncIO;
@@ -22,8 +21,10 @@ class ImageCache
 	public static var hits(default, null):Int = 0;
 	public static var misses(default, null):Int = 0;
 
-	static inline var VERSION:Int = 1;
-	static inline var KIND:String = "images";
+	static inline var VERSION:Int = 2;
+	static inline var KIND:String = "qoi";
+	static inline var LEGACY_KIND:String = "images";
+	static var legacyCleared:Bool = false;
 	static var storing:Map<String, Bool> = new Map();
 	#if target.threaded
 	static var lock:Mutex = new Mutex();
@@ -32,21 +33,15 @@ class ImageCache
 	public static function keyOfFile(path:String):Null<String>
 	{
 		if (!active() || path == null || path.indexOf("://") > -1 || !eligiblePath(path)) return null;
-		try
-		{
-			final stat = FileSystem.stat(path);
-			if (stat.size < minBytes) return null;
-			return Md5.encode(VERSION + "|" + FileSystem.fullPath(path) + "|" + stat.size + "|" + stat.mtime.getTime()) + ".qoi";
-		}
-		catch (_:Dynamic)
-		{
-			return null;
-		}
+		clearLegacy();
+		final hash:String = NativeCFFI.lime_file_hash(path, minBytes);
+		return hash == null ? null : VERSION + "-" + hash + ".qoi";
 	}
 
 	public static function keyOfBytes(bytes:Bytes):Null<String>
 	{
 		if (!active() || bytes == null || bytes.length < minBytes || !eligibleBytes(bytes)) return null;
+		clearLegacy();
 		final hash:String = NativeCFFI.lime_bytes_hash(bytes, 0, bytes.length);
 		return hash == null ? null : VERSION + "-" + hash + ".qoi";
 	}
@@ -107,6 +102,13 @@ class ImageCache
 	public static function clear():Void
 	{
 		DiskCache.clear(KIND);
+	}
+
+	static function clearLegacy():Void
+	{
+		if (legacyCleared) return;
+		legacyCleared = true;
+		DiskCache.clear(LEGACY_KIND);
 	}
 
 	static function release(key:String):Void
