@@ -4,6 +4,9 @@ package lime.system;
 import haxe.io.Bytes;
 import sys.FileSystem;
 import sys.io.File;
+#if target.threaded
+import sys.thread.Mutex;
+#end
 
 class DiskCache
 {
@@ -12,6 +15,9 @@ class DiskCache
 
 	static var root:String = null;
 	static var total:Float = -1;
+	#if target.threaded
+	static var lock:Mutex = new Mutex();
+	#end
 
 	public static function get(kind:String, key:String):Null<Bytes>
 	{
@@ -31,20 +37,13 @@ class DiskCache
 	public static function put(kind:String, key:String, bytes:Bytes):Bool
 	{
 		if (!enabled || bytes == null) return false;
-		final path = pathOf(kind, key);
+		final path = reserve(kind, key);
 		if (path == null) return false;
 		try
 		{
-			if (total < 0) total = size();
-			if (FileSystem.exists(path))
-			{
-				total -= FileSystem.stat(path).size;
-				FileSystem.deleteFile(path);
-			}
 			File.saveBytes(path + ".tmp", bytes);
 			FileSystem.rename(path + ".tmp", path);
-			total += bytes.length;
-			if (total > limit) trim();
+			commit(bytes.length);
 			return true;
 		}
 		catch (_:Dynamic)
@@ -53,12 +52,68 @@ class DiskCache
 		}
 	}
 
+	public static function putAsync(kind:String, key:String, bytes:Bytes):Void
+	{
+		#if (lime_cffi && !macro && !hl && !cs)
+		if (!enabled || bytes == null) return;
+		if (!AsyncIO.enabled)
+		{
+			put(kind, key, bytes);
+			return;
+		}
+		final path = reserve(kind, key);
+		if (path == null) return;
+		AsyncIO.writeFile(path, bytes).onComplete(commit);
+		#else
+		put(kind, key, bytes);
+		#end
+	}
+
+	public static function pathFor(kind:String, key:String):Null<String>
+	{
+		return enabled ? pathOf(kind, key) : null;
+	}
+
+	public static function reserve(kind:String, key:String):Null<String>
+	{
+		if (!enabled) return null;
+		final path = pathOf(kind, key);
+		if (path == null) return null;
+		#if target.threaded lock.acquire(); #end
+		try
+		{
+			if (total < 0) total = size();
+			if (FileSystem.exists(path))
+			{
+				total -= FileSystem.stat(path).size;
+				FileSystem.deleteFile(path);
+			}
+		}
+		catch (_:Dynamic) {}
+		#if target.threaded lock.release(); #end
+		return path;
+	}
+
+	public static function commit(bytes:Float):Void
+	{
+		#if target.threaded lock.acquire(); #end
+		try
+		{
+			if (total < 0) total = size();
+			total += bytes;
+			if (total > limit) trim();
+		}
+		catch (_:Dynamic) {}
+		#if target.threaded lock.release(); #end
+	}
+
 	public static function remove(kind:String, key:String):Void
 	{
 		final path = pathOf(kind, key);
 		if (path == null) return;
 		try
 		{
+			#if target.threaded lock.acquire(); #end
 			if (FileSystem.exists(path))
 			{
 				if (total >= 0) total -= FileSystem.stat(path).size;
@@ -66,6 +121,7 @@ class DiskCache
 			}
 		}
 		catch (_:Dynamic) {}
+		#if target.threaded lock.release(); #end
 	}
 
 	public static function clear(?kind:String):Void

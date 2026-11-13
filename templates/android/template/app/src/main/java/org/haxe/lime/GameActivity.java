@@ -649,4 +649,79 @@ public class GameActivity extends SDLActivity {
 	}
 
 
+	public static void vibrateAmplitude (int duration, int amplitude) {
+
+		if (vibrator == null || !vibrator.hasVibrator () || duration <= 0) {
+
+			return;
+
+		}
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+			if (vibrator.hasAmplitudeControl ()) {
+
+				int amp = Math.max (1, Math.min (255, amplitude));
+				vibrator.vibrate (VibrationEffect.createOneShot (duration, amp));
+
+			} else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && duration <= 60) {
+
+				vibrator.vibrate (VibrationEffect.createPredefined (VibrationEffect.EFFECT_TICK));
+
+			} else {
+
+				vibrator.vibrate (VibrationEffect.createOneShot (Math.min (duration, 25), VibrationEffect.DEFAULT_AMPLITUDE));
+
+			}
+
+		} else {
+
+			vibrator.vibrate (Math.min (duration, 25));
+
+		}
+
+	}
+
+
+	public static void vibrateLoop (int amplitude) {
+
+		if (vibrator == null || !vibrator.hasVibrator ()) {
+
+			return;
+
+		}
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+			if (vibrator.hasAmplitudeControl ()) {
+
+				int amp = Math.max (1, Math.min (255, amplitude));
+				long[] timings = { 0, 30, 30, 30, 1000 };
+				int[] amps = { 0, Math.max (1, amp / 3), Math.max (1, amp * 2 / 3), amp, amp };
+				vibrator.vibrate (VibrationEffect.createWaveform (timings, amps, 4));
+
+			} else {
+
+				long[] timings = { 0, 10, 70 };
+				vibrator.vibrate (VibrationEffect.createWaveform (timings, 1));
+
+			}
+
+		} else {
+
+			long[] pattern = { 0, 10, 70 };
+			vibrator.vibrate (pattern, 1);
+
+		}
+
+	}
+
+
+	public static void vibrateStop () {
+
+		if (vibrator != null) vibrator.cancel ();
+
+	}
+
+
 }

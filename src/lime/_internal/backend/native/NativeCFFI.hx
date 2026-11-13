@@ -112,6 +112,21 @@ class NativeCFFI
 
 	@:cffi private static function lime_bytes_read_file(path:String, bytes:Dynamic):Dynamic;
 
+	@:cffi private static function lime_async_io_read_file(path:String, id:Int):Bool;
+
+	@:cffi private static function lime_async_io_write_file(path:String, bytes:Dynamic, id:Int):Bool;
+
+	@:cffi private static function lime_async_io_write_qoi(path:String, buffer:Dynamic, id:Int):Bool;
+
+	@:cffi private static function lime_async_io_poll(waitMS:Int):Dynamic;
+
+	@:cffi private static function lime_async_io_take(id:Int, bytes:Dynamic):Bool;
+
+	@:cffi private static function lime_async_io_pending():Int;
+
+	@:cffi private static function lime_bytes_hash(bytes:Dynamic, offset:Int, length:Int):Dynamic;
+
+
 	@:cffi private static function lime_cffi_get_native_pointer(ptr:Dynamic):Float;
 
 	@:cffi private static function lime_clipboard_event_manager_register(callback:Dynamic, eventObject:Dynamic):Void;
@@ -909,6 +924,15 @@ class NativeCFFI
 		"lime_bytes_get_data_pointer_offset", "oid", false));
 	private static var lime_bytes_read_file = new cpp.Callable<String->cpp.Object->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_bytes_read_file", "soo",
 		false));
+	private static var lime_async_io_read_file = new cpp.Callable<String->Int->Bool>(cpp.Prime._loadPrime("lime", "lime_async_io_read_file", "sib", false));
+	private static var lime_async_io_write_file = new cpp.Callable<String->cpp.Object->Int->Bool>(cpp.Prime._loadPrime("lime", "lime_async_io_write_file",
+		"soib", false));
+	private static var lime_async_io_write_qoi = new cpp.Callable<String->cpp.Object->Int->Bool>(cpp.Prime._loadPrime("lime", "lime_async_io_write_qoi",
+		"soib", false));
+	private static var lime_async_io_poll = new cpp.Callable<Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_async_io_poll", "io", false));
+	private static var lime_async_io_take = new cpp.Callable<Int->cpp.Object->Bool>(cpp.Prime._loadPrime("lime", "lime_async_io_take", "iob", false));
+	private static var lime_async_io_pending = new cpp.Callable<Void->Int>(cpp.Prime._loadPrime("lime", "lime_async_io_pending", "i", false));
+	private static var lime_bytes_hash = new cpp.Callable<cpp.Object->Int->Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_bytes_hash", "oiio", false));
 	private static var lime_cffi_get_native_pointer = new cpp.Callable<cpp.Object->Float>(cpp.Prime._loadPrime("lime", "lime_cffi_get_native_pointer", "od",
 		false));
 	private static var lime_clipboard_event_manager_register = new cpp.Callable<cpp.Object->cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime",
@@ -1522,6 +1546,13 @@ class NativeCFFI
 	private static var lime_bytes_get_data_pointer = CFFI.load("lime", "lime_bytes_get_data_pointer", 1);
 	private static var lime_bytes_get_data_pointer_offset = CFFI.load("lime", "lime_bytes_get_data_pointer_offset", 2);
 	private static var lime_bytes_read_file = CFFI.load("lime", "lime_bytes_read_file", 2);
+	private static var lime_async_io_read_file = CFFI.load("lime", "lime_async_io_read_file", 2);
+	private static var lime_async_io_write_file = CFFI.load("lime", "lime_async_io_write_file", 3);
+	private static var lime_async_io_write_qoi = CFFI.load("lime", "lime_async_io_write_qoi", 3);
+	private static var lime_async_io_poll = CFFI.load("lime", "lime_async_io_poll", 1);
+	private static var lime_async_io_take = CFFI.load("lime", "lime_async_io_take", 2);
+	private static var lime_async_io_pending = CFFI.load("lime", "lime_async_io_pending", 0);
+	private static var lime_bytes_hash = CFFI.load("lime", "lime_bytes_hash", 3);
 	private static var lime_cffi_get_native_pointer = CFFI.load("lime", "lime_cffi_get_native_pointer", 1);
 	private static var lime_clipboard_event_manager_register = CFFI.load("lime", "lime_clipboard_event_manager_register", 2);
 	private static var lime_clipboard_get_text = CFFI.load("lime", "lime_clipboard_get_text", 0);

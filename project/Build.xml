@@ -273,6 +273,7 @@
 			<file name="src/backend/sdl/SDLMutex.cpp" />
 			<file name="src/backend/sdl/SDLSystem.cpp" />
 			<file name="src/backend/sdl/SDLWindow.cpp" />
+			<file name="src/system/AsyncIOBindings.cpp" />
 			<file name="src/backend/sdl/SDLWindowMac.mm" if="mac" />
 			<file name="src/graphics/vulkan/VKRenderer.cpp" if="LIME_VULKAN" />
 
@@ -332,6 +333,7 @@
 		<file name="src/app/ApplicationEvent.cpp" />
 		<file name="src/graphics/Image.cpp" />
 		<file name="src/graphics/ImageBuffer.cpp" />
+		<file name="src/graphics/format/QOI.cpp" />
 		<file name="src/graphics/RenderEvent.cpp" />
 		<file name="src/graphics/utils/ImageDataUtil.cpp" />
 		<file name="src/hx/CFFIExt.cpp" />

@@ -16,6 +16,7 @@
 #include <math.h>
 #include <graphics/format/JPEG.h>
 #include <graphics/format/PNG.h>
+#include <graphics/format/QOI.h>
 #include <graphics/utils/ImageDataUtil.h>
 #include <graphics/Image.h>
 #include <graphics/ImageBuffer.h>
@@ -3590,6 +3591,15 @@ namespace lime {
 				#endif
 				break;
 
+			case 2:
+
+				if (QOI::Encode (&imageBuffer, &data)) {
+
+					return data.Value (bytes);
+
+				}
+				break;
+
 			default: break;
 
 		}
@@ -3625,6 +3635,15 @@ namespace lime {
 				#endif
 				break;
 
+			case 2:
+
+				if (QOI::Encode (buffer, bytes)) {
+
+					return bytes;
+
+				}
+				break;
+
 			default: break;
 
 		}
@@ -3643,6 +3662,12 @@ namespace lime {
 
 		bytes.Set (data);
 		resource = Resource (&bytes);
+
+		if (QOI::Decode (&resource, &imageBuffer)) {
+
+			return imageBuffer.Value (buffer);
+
+		}
 
 		#ifdef LIME_PNG
 		if (PNG::Decode (&resource, &imageBuffer)) {
@@ -3669,6 +3694,12 @@ namespace lime {
 
 		Resource resource = Resource (data);
 
+		if (QOI::Decode (&resource, buffer)) {
+
+			return buffer;
+
+		}
+
 		#ifdef LIME_PNG
 		if (PNG::Decode (&resource, buffer)) {
 
@@ -3694,6 +3725,12 @@ namespace lime {
 
 		Resource resource = Resource (val_string (data));
 		ImageBuffer imageBuffer = ImageBuffer (buffer);
+
+		if (QOI::Decode (&resource, &imageBuffer)) {
+
+			return imageBuffer.Value (buffer);
+
+		}
 
 		#ifdef LIME_PNG
 		if (PNG::Decode (&resource, &imageBuffer)) {
@@ -3729,8 +3766,10 @@ namespace lime {
 
 		Resource resource = Resource (file.c_str ());
 
+		decoded = QOI::Decode (&resource, &imageBuffer, true);
+
 		#ifdef LIME_PNG
-		decoded = PNG::Decode (&resource, &imageBuffer, true);
+		if (!decoded) decoded = PNG::Decode (&resource, &imageBuffer, true);
 		#endif
 
 		#ifdef LIME_JPEG
@@ -3987,6 +4026,12 @@ namespace lime {
 	HL_PRIM ImageBuffer* HL_NAME(hl_image_load_file) (hl_vstring* data, ImageBuffer* buffer) {
 
 		Resource resource = Resource (data);
+
+		if (QOI::Decode (&resource, buffer)) {
+
+			return buffer;
+
+		}
 
 		#ifdef LIME_PNG
 		if (PNG::Decode (&resource, buffer)) {
@@ -15392,6 +15437,12 @@ extern "C" int lime_sdl_sound_register_prims ();
 extern "C" int lime_sdl_sound_register_prims () { return 0; }
 #endif
 
+#ifdef LIME_SDL
+extern "C" int lime_async_io_register_prims ();
+#else
+extern "C" int lime_async_io_register_prims () { return 0; }
+#endif
+
 extern "C" int lime_local_socket_register_prims ();
 extern "C" int lime_video_register_prims ();
 
@@ -15404,6 +15455,7 @@ extern "C" int lime_vorbis_register_prims () { return 0; }
 
 extern "C" int lime_register_prims () {
 
+	lime_async_io_register_prims ();
 	lime_cairo_register_prims ();
 	lime_curl_register_prims ();
 	lime_harfbuzz_register_prims ();

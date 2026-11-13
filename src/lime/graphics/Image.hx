@@ -9,6 +9,7 @@ import lime._internal.format.Base64;
 import lime._internal.format.BMP;
 import lime._internal.format.JPEG;
 import lime._internal.format.PNG;
+import lime._internal.format.QOI;
 import lime._internal.graphics.ImageCanvasUtil;
 import lime._internal.graphics.ImageDataUtil;
 import lime.app.Application;
@@ -28,6 +29,9 @@ import lime.utils.ArrayBuffer;
 import lime.utils.BytePointer;
 import lime.utils.Log;
 import lime.utils.UInt8Array;
+#if (sys && lime_cffi && !macro && !hl && !cs)
+import lime.system.AsyncIO;
+#end
 #if (js && html5)
 #if !display
 import lime._internal.backend.html5.HTML5HTTPRequest;
@@ -522,6 +526,9 @@ class Image
 			case ImageFileFormat.BMP:
 				return BMP.encode(this);
 
+			case ImageFileFormat.QOI:
+				return QOI.encode(this);
+
 			default:
 		}
 
@@ -657,9 +664,22 @@ class Image
 	public static function fromBytes(bytes:Bytes):Image
 	{
 		if (bytes == null) return null;
+		#if (sys && lime_cffi && !macro && !hl && !cs)
+		final key = ImageCache.keyOfBytes(bytes);
+		final cached = ImageCache.load(key);
+		if (cached != null)
+		{
+			final image = new Image();
+			image.__fromImageBuffer(cached);
+			return image;
+		}
+		#end
 		var image = new Image();
 		if (image.__fromBytes(bytes))
 		{
+			#if (sys && lime_cffi && !macro && !hl && !cs)
+			ImageCache.store(key, image.buffer);
+			#end
 			return image;
 		}
 		else
@@ -700,9 +720,22 @@ class Image
 	public static function fromFile(path:String):Image
 	{
 		if (path == null) return null;
+		#if (sys && lime_cffi && !macro && !hl && !cs)
+		final key = ImageCache.keyOfFile(path);
+		final cached = ImageCache.load(key);
+		if (cached != null)
+		{
+			final image = new Image();
+			image.__fromImageBuffer(cached);
+			return image;
+		}
+		#end
 		var image = new Image();
 		if (image.__fromFile(path))
 		{
+			#if (sys && lime_cffi && !macro && !hl && !cs)
+			ImageCache.store(key, image.buffer);
+			#end
 			return image;
 		}
 		else
@@ -999,6 +1032,11 @@ class Image
 		loader.loadBytes(bytes.getData());
 
 		return promise.future;
+		#elseif (sys && lime_cffi && !macro && !hl && !cs)
+		final key = ImageCache.keyOfBytes(bytes);
+		final cached = ImageCache.pathOf(key);
+		if (cached != null) return __loadCached(cached, key, function() return __decodeThreaded(bytes, key));
+		return __decodeThreaded(bytes, key);
 		#else
 		return new Future(fromBytes.bind(bytes), true);
 		#end
@@ -1039,6 +1077,22 @@ class Image
 
 		return promise.future;
 		#else
+		#if (sys && lime_cffi && !macro && !hl && !cs)
+		if (AsyncIO.enabled && path.indexOf("://") < 0)
+		{
+			final key = ImageCache.keyOfFile(path);
+			final cached = ImageCache.pathOf(key);
+			final direct = function() return __loadFileAsync(path, key);
+			return cached != null ? __loadCached(cached, key, direct) : direct();
+		}
+		#end
+		return __loadFileHTTP(path);
+		#end
+	}
+
+	#if (!flash && !(js && html5 && !display))
+	@:noCompletion private static function __loadFileHTTP(path:String):Future<Image>
+	{
 		// load raw bytes (threaded), then decode via loadFromBytes (also threaded) -
 		// HTTPRequest<Image> used to decode inline on the byte-read callback's thread
 		var request = new HTTPRequest<Bytes>();
@@ -1061,8 +1115,66 @@ class Image
 				}
 			});
 		});
-		#end
 	}
+
+	#if (sys && lime_cffi && !macro && !hl && !cs)
+	@:noCompletion private static function __decodeRaw(bytes:Bytes):Image
+	{
+		final image = new Image();
+		return image.__fromBytes(bytes) ? image : null;
+	}
+
+	@:noCompletion private static function __decodeThreaded(bytes:Bytes, key:String):Future<Image>
+	{
+		return new Future(__decodeRaw.bind(bytes), true).then(function(image)
+		{
+			if (image != null) ImageCache.store(key, image.buffer);
+			return Future.withValue(image);
+		});
+	}
+
+	@:noCompletion private static function __loadFileAsync(path:String, key:String):Future<Image>
+	{
+		final promise = new Promise<Image>();
+		AsyncIO.readFile(path).onComplete(function(bytes)
+		{
+			__decodeThreaded(bytes, key).onComplete(function(image)
+			{
+				if (image != null) promise.complete(image);
+				else promise.error("[Image] Could not decode file \"" + path + "\"");
+			}).onError(promise.error);
+		}).onError(function(_)
+		{
+			__loadFileHTTP(path).onComplete(promise.complete).onError(promise.error);
+		});
+		return promise.future;
+	}
+
+	@:noCompletion private static function __loadCached(path:String, key:String, fallback:Void->Future<Image>):Future<Image>
+	{
+		final promise = new Promise<Image>();
+		final retry = function(_:Dynamic)
+		{
+			ImageCache.remove(key);
+			ImageCache.misses++;
+			fallback().onComplete(promise.complete).onError(promise.error);
+		}
+		AsyncIO.readFile(path).onComplete(function(bytes)
+		{
+			new Future(__decodeRaw.bind(bytes), true).onComplete(function(image)
+			{
+				if (image == null) retry(null);
+				else
+				{
+					ImageCache.hits++;
+					promise.complete(image);
+				}
+			}).onError(retry);
+		}).onError(retry);
+		return promise.future;
+	}
+	#end
+	#end
 
 	/**
 		Blits a second `Image` onto this one, using optional color multipliers

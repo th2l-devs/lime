@@ -19,4 +19,6 @@ enum ImageFileFormat
 		An image file encoded in the PNG file format
 	**/
 	PNG;
+
+	QOI;
 }
